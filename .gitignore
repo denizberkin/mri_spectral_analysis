@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.egg-info/
+experiment-pipeline/runs/
+experiment-pipeline/mlruns/
+experiment-pipeline/mlflow.db
+mlruns/
+mlflow.db
+reports/
+*.pt
+*.nii.gz
+*.npz

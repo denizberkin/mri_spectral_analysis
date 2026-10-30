@@ -1,0 +1,11 @@
+# Python >= 3.13 (tomllib, PEP 604 types). Install torch from the CUDA index that matches your driver.
+torch>=2.6
+numpy
+scipy
+scikit-image
+pandas
+matplotlib
+nibabel
+lpips
+tqdm
+mlflow

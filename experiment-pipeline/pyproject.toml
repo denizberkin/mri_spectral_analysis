@@ -1,0 +1,18 @@
+[project]
+name = "pipeline"
+version = "0.1.0"
+description = "A generic config-driven experiment evaluation pipeline."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.optional-dependencies]
+torch = ["torch"]
+cifar10 = ["torch", "torchvision"]
+mlflow = ["mlflow"]
+
+[project.scripts]
+eval-pipeline = "eval_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["eval_pipeline*"]
