@@ -80,3 +80,30 @@ python scripts/spectral_figures.py --in-dir reports/spectral --out-dir reports/s
 python scripts/error_spectrum_analysis.py \
     --checkpoint experiment-pipeline/runs/task3_mc_ssim_slice/artifacts/avg_e6_e8.pt
 ```
+
+## Low-dose CT (`ldct/`)
+
+Low-dose to full-dose CT image translation on TCIA's LDCT-and-Projection-data
+(Mayo Clinic, doi:10.7937/9npb-2637), reusing the Task 3 model, trainer and losses.
+Only the data code is CT-specific.
+
+- Needs the reconstructed image series downloaded separately (not part of this repo).
+- Set `LDCT_DIR` and `LDCT_PREPROCESSED_DIR` in `.env`.
+- Cite the dataset and acknowledge NIBIB grants EB017095 and EB017185 in any
+  presentation or publication.
+
+Workflow, from the repo root with both variables set:
+
+```bash
+python scripts/build_ldct_index.py     # series -> index.csv, with a patient-level train/val/test split
+python scripts/preprocess_ldct.py      # DICOM -> per-slice npz holding raw HU
+cd experiment-pipeline
+python -m eval_pipeline run configs/ldct_baseline.toml --stages training
+```
+
+- Only the Siemens patients have both doses, so only they are used for paired training.
+  The split is by patient (default 5 val and 10 test per anatomy, `--seed` fixes it).
+- The npz files hold raw Hounsfield units. The intensity window is applied at load time and
+  set per anatomy under `[data.params.hu_windows]`; compute metrics in the same window.
+- The domain is the dose: low-dose chest, low-dose liver and full dose are three domains
+  (`domain_scheme = "dose"`, `num_domains = 3`). `"anatomy_dose"` gives four.

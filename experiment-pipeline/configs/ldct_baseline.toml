@@ -1,0 +1,87 @@
+[experiment]
+name = "ldct_chest_baseline"   # one model per anatomy first; ldct_joint is the 3-domain run against it.
+                               # Low dose -> full dose, trained from scratch: there is no CT pretraining to
+                               # seed from, and the MRI checkpoints are in a different intensity domain.
+                               # To run liver or both, change data.params.anatomies and the experiment name.
+seed = 1
+device = "cuda:0"
+output_dir = "../runs"
+
+[tracking]
+name = "mlflow"
+
+[tracking.params]
+experiment_name = "ldct-conditional-unet"
+run_name = "ldct_chest_baseline"
+tracking_uri = "sqlite:///mlflow.db"
+
+[registry]
+paths = [
+  "../components/data/ldct.py",
+  "../components/models/conditional_unet.py",
+  "../components/losses/reconstruction.py",
+  "../components/training/task3.py",
+]
+
+[data]
+name = "ldct_paired"
+
+[data.params]
+anatomies = ["chest"]         # ["liver"], or both for the joint model
+source_dose = "low"
+target_dose = "full"
+domain_scheme = "dose"        # low-dose chest = 0, low-dose liver = 1, full dose = 2; "anatomy_dose" is the 4-domain ablation
+batch_size = 16
+num_workers = 8
+seed = 1
+patch_size = 256              # random crop of the 512x512 slice, same window for source and target; validation uses whole slices
+horizontal_flip = 0.5
+include_slice_pos = false     # patient coverage in z differs, so the normalised position is only a rough hint
+validation_samples = 400      # whole slices, thinned evenly; 0 keeps the full validation fold
+# HU windows are applied at load time (the npz files hold raw HU). Change them here, no re-preprocess needed.
+# Metrics must use the same window as the training data.
+[data.params.hu_windows]
+chest = [-1000.0, 400.0]
+liver = [-160.0, 240.0]
+
+[model]
+name = "task3_conditional_unet"
+
+[model.params]
+input_channels = 1
+output_channels = 1
+num_domains = 3               # must match the domain_scheme: dose = 3, anatomy_dose = 4
+base_channels = 32
+max_channels = 512
+levels = 4
+# Zero-init residual head: at step 0 the output is the low-dose input, so the model starts at
+# "do nothing" and only has to learn the noise removal.
+residual_output = true
+film_conditioning = true
+slice_conditioning = false
+
+[training]
+name = "task3_unet_trainer"
+
+[training.params]
+pretrain_steps = 0
+epochs = 30
+learning_rate = 0.0001
+beta1 = 0.9
+beta2 = 0.999
+save_every = 1
+log_checkpoints = false
+amp = true
+progress = true
+progress_interval = 5.0
+early_stopping_patience = 0
+early_stopping_min_delta = 0.0001
+early_stopping_restore_best = true
+
+[[losses]]
+name = "task3_l1"
+weight = 1.0
+
+[[losses]]
+name = "task3_ssim"
+weight = 0.5
