@@ -54,7 +54,9 @@ def check_patient(task: dict) -> dict:
         stats = {"diff_mean": [], "diff_std": [], "corr": [], "shift_ok": [], "slice_ok": []}
         for i in range(1, n - 1, stride):
             low, full = _load(base / "low", patient, i), _load(base / "full", patient, i)
-            mask = (full > TISSUE[0]) & (full < TISSUE[1]) & (low > TISSUE[0]) & (low < TISSUE[1])
+            # Select on the full-dose image only. Selecting on the noisy low-dose image as well
+            # would cut off its noise tails and bias the difference statistics.
+            mask = (full > TISSUE[0]) & (full < TISSUE[1])
             if mask.mean() < 0.02:
                 continue  # a slice at the end of the scan with little tissue
             diff = (low - full)[mask]
