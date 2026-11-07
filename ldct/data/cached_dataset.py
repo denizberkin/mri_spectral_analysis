@@ -14,8 +14,8 @@ from .utils import parse_slice_name
 # visible, so the metrics must be computed in the same window.
 
 # WHICH ONE!!! CHECK THIS LATER
-#DEFAULT_HU_WINDOWS = {"chest": (-1000.0, 400.0), "liver": (-160.0, 240.0)}
-DEFAULT_HU_WINDOWS = {"chest": (-160.0, 240.0), "liver": (-160.0, 240.0)}
+DEFAULT_HU_WINDOWS = {"chest": (-1000.0, 400.0), "liver": (-160.0, 240.0)}
+#DEFAULT_HU_WINDOWS = {"chest": (-160.0, 240.0), "liver": (-160.0, 240.0)}
 
 def window_to_unit(hu: np.ndarray, low: float, high: float) -> np.ndarray:
     """Clip HU to [low, high] and rescale to [0, 1] (float32)."""
