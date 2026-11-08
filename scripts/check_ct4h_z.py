@@ -34,13 +34,13 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ct4h.data.utils import DOSES, HU_RANGE, RECONS, SCANNERS, read_index, select
+from ct4h.data.utils import DOSES, HU_RANGE, RECONS, SCANNERS, rebase_z, read_index, select
 
 CLIP = HU_RANGE  # same range as the dataset authors' code
 GRID_MM = 0.1
 COLUMNS = [
     "scanner", "dose_mgy", "recon", "repeat", "n_slices", "spacing_mm", "hdr_start_mm",
-    "dz_mm", "rms_best", "rms_zero", "sharp", "overlap_frac", "error",
+    "dz_mm", "rms_best", "rms_zero", "sharp", "overlap_frac", "z_rebased_mm", "error",
 ]
 
 
@@ -111,14 +111,16 @@ def process_scanner(task: dict) -> list[dict]:
         base = {"scanner": scanner, "dose_mgy": row["dose_mgy"], "recon": row["recon"], "repeat": row["repeat"]}
         if row is ref:
             out.append({**base, "n_slices": len(ref_profile["z"]), "spacing_mm": ref_profile["spacing"],
-                        "hdr_start_mm": 0.0, "dz_mm": 0.0, "error": "reference"})
+                        "hdr_start_mm": 0.0, "dz_mm": 0.0, "z_rebased_mm": 0.0, "error": "reference"})
             continue
         try:
             profile = read_profile(data_dir / row["series_dir"])
+            profile["z"], z_shift = rebase_z(profile["z"], ref_profile["z"][0])  # different table frame
             result = estimate_dz(ref_profile, profile, task["max_shift_mm"])
             note = "search window edge: dz may be larger than --max_shift_mm" if result.pop("at_edge") else ""
             out.append({**base, "n_slices": len(profile["z"]), "spacing_mm": profile["spacing"],
-                        "hdr_start_mm": float(profile["z"][0] - ref_profile["z"][0]), **result, "error": note})
+                        "hdr_start_mm": float(profile["z"][0] - ref_profile["z"][0]), **result,
+                        "z_rebased_mm": z_shift, "error": note})
         except Exception as error:  # report per series, keep going
             out.append({**base, "error": f"{type(error).__name__}: {error}"})
     return out

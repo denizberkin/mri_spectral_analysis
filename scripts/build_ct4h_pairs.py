@@ -13,7 +13,10 @@ each scan's numbers are taken from its FBP series.
 Per pair this writes (shifts are what to apply to the SOURCE to land on the TARGET):
 
     dy_px, dx_px       in-plane shift in pixels;  dy_int, dx_int  the same, rounded (no interpolation)
-    dz_mm              sample the source at (target z + dz_mm)
+    dz_mm              sample the source at (target z + dz_mm)  (residual displacement; DICOM z already included)
+    dz_idx             slice-index offset: target slice i <-> source slice i + dz_idx (nearest slice, no resampling).
+                       Includes the difference of the two series' DICOM start positions, so use this one to pair slices.
+    z_resid_mm         what is left after that rounding (|.| <= half the slice increment)
     needs_shift        |shift| > --shift_tol_px   (otherwise the pair can be used as is in-plane)
     needs_z            |dz| > --z_tol_mm          (only if a z table was given)
     excluded_reason    a scan that sits somewhere else entirely (outlier), a series with missing slices
@@ -40,7 +43,7 @@ from ct4h.data.utils import DOSES, RECONS, SCANNERS, read_index, select
 
 COLUMNS = [
     "scanner", "recon", "src_dose", "tgt_dose", "src_repeat", "tgt_repeat", "src_series_uid", "tgt_series_uid",
-    "src_dir", "tgt_dir", "dy_px", "dx_px", "dy_int", "dx_int", "shift_px", "dz_mm",
+    "src_dir", "tgt_dir", "dy_px", "dx_px", "dy_int", "dx_int", "shift_px", "dz_mm", "dz_idx", "z_resid_mm",
     "needs_shift", "needs_z", "excluded_reason", "usable",
 ]
 
@@ -87,20 +90,23 @@ def load_z(path: Path) -> tuple[dict, set]:
     with open(path, newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             key = (row["scanner"], int(row["dose_mgy"]), int(row["repeat"]))
+            sp, hdr = _float(row.get("spacing_mm", "")), _float(row.get("hdr_start_mm", ""))
             if row.get("error") == "reference":
                 refs.add(key)
-                dz[key] = {"dz": 0.0, "reliable": True}
+                dz[key] = {"dz": 0.0, "reliable": True, "hdr": 0.0, "sp": sp}
             elif row.get("dz_mm") not in (None, ""):
-                dz[key] = {"dz": _float(row["dz_mm"]), "reliable": not row.get("error")}
+                dz[key] = {"dz": _float(row["dz_mm"]), "reliable": not row.get("error"), "hdr": hdr, "sp": sp}
     return dz, refs
 
 
 def scan_state(key, align, zinfo, refs, args) -> dict:
     """Position of one scan (relative to its scanner reference) and why it may be unusable."""
-    state = {"dy": 0.0, "dx": 0.0, "dz": float("nan"), "reason": ""}
+    state = {"dy": 0.0, "dx": 0.0, "dz": float("nan"), "hdr": float("nan"), "sp": float("nan"), "reason": ""}
     is_ref = key in refs
     if is_ref:
         state["dz"] = 0.0
+        z = zinfo.get(key) if zinfo is not None else None
+        state.update(hdr=0.0, sp=z["sp"] if z else float("nan"))
         return state
     info = align.get(key)
     if info is None:
@@ -114,7 +120,7 @@ def scan_state(key, align, zinfo, refs, args) -> dict:
         if z is None or not z["reliable"] or not np.isfinite(z["dz"]):
             state["reason"] = state["reason"] or "unchecked_z"
         else:
-            state["dz"] = z["dz"]
+            state.update(dz=z["dz"], hdr=z["hdr"], sp=z["sp"])
     return state
 
 
@@ -152,6 +158,14 @@ def build(args) -> list[dict]:
                     t = scan_state((scanner, args.target_dose, rt), align, zinfo, refs, args)
                     dy, dx = s["dy"] - t["dy"], s["dx"] - t["dx"]
                     dz = s["dz"] - t["dz"]
+                    # slice-index offset: target slice i <-> source slice i + dz_idx. The source grid starts
+                    # (hdr_s - hdr_t) mm after the target's; the residual displacement dz comes on top.
+                    sp = s["sp"]
+                    if np.isfinite(dz) and np.isfinite(sp) and sp > 0:
+                        dz_idx = int(round((t["hdr"] - s["hdr"] + dz) / sp))
+                        z_resid = (t["hdr"] - s["hdr"] + dz) - dz_idx * sp
+                    else:
+                        dz_idx, z_resid = "", ""
                     shift = float(np.hypot(dy, dx))
                     reason = s["reason"] or t["reason"]
                     if not reason and ((scanner, recon, dose, rs) in irregular
@@ -164,6 +178,7 @@ def build(args) -> list[dict]:
                         "src_dir": source_rows[rs]["series_dir"], "tgt_dir": target_rows[rt]["series_dir"],
                         "dy_px": round(dy, 3), "dx_px": round(dx, 3), "dy_int": int(round(dy)), "dx_int": int(round(dx)),
                         "shift_px": round(shift, 3), "dz_mm": "" if not np.isfinite(dz) else round(dz, 3),
+                        "dz_idx": dz_idx, "z_resid_mm": "" if z_resid == "" else round(z_resid, 3),
                         "needs_shift": int(shift > args.shift_tol_px),
                         "needs_z": int(np.isfinite(dz) and abs(dz) > args.z_tol_mm),
                         "excluded_reason": reason, "usable": int(not reason),
@@ -173,7 +188,7 @@ def build(args) -> list[dict]:
 
 def summarize(pairs: list[dict]) -> None:
     print(f"\n{len(pairs)} pairs, {sum(p['usable'] for p in pairs)} usable")
-    print(f"{'scanner':8}{'recon':6}{'pairs':>7}{'usable':>8}{'shift':>7}{'z':>5}{'outlier':>9}{'unchecked':>11}")
+    print(f"{'scanner':8}{'recon':6}{'pairs':>7}{'usable':>8}{'shift':>7}{'z':>5}{'outlier':>9}{'irregular':>10}{'unchecked':>11}")
     keys = sorted({(p["scanner"], p["recon"]) for p in pairs})
     for scanner, recon in keys:
         sel = [p for p in pairs if p["scanner"] == scanner and p["recon"] == recon]
@@ -181,7 +196,7 @@ def summarize(pairs: list[dict]) -> None:
         usable = [p for p in sel if p["usable"]]
         print(f"{scanner:8}{recon:6}{len(sel):>7}{len(usable):>8}{sum(p['needs_shift'] for p in usable):>7}"
               f"{sum(p['needs_z'] for p in usable):>5}{why['outlier_position']:>9}"
-              f"{why['unchecked_inplane'] + why['unchecked_z']:>11}")
+              f"{why['irregular_z']:>10}{why['unchecked_inplane'] + why['unchecked_z']:>11}")
     print("\nshift = usable pairs needing an in-plane shift; z = usable pairs needing a z correction")
 
 

@@ -54,7 +54,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ct4h.data.utils import DOSES, HU_RANGE, RECONS, SCANNERS, read_index, select
+from ct4h.data.utils import DOSES, HU_RANGE, RECONS, SCANNERS, rebase_z, read_index, select
 
 CLIP = HU_RANGE  # same range as the dataset authors' code
 # Gaussian smoothing (px) applied to a COPY of each slice, only to estimate the shift: at 1 mGy the noise would
@@ -63,7 +63,7 @@ SMOOTH_SIGMA = 1.5
 COLUMNS = [
     "scanner", "dose_mgy", "recon", "repeat", "vs", "n_slices", "hdr_z_off", "img_z_off",
     "z_ncc_best", "z_ncc_next", "shift_y_px", "shift_x_px", "shift_mm", "shift_spread_px", "ncc", "slices_used",
-    "rot_deg", "rot_ncc_gain", "iop_dev", "tilt_deg", "z_irregular_mm", "error",
+    "rot_deg", "rot_ncc_gain", "iop_dev", "tilt_deg", "z_irregular_mm", "z_rebased_mm", "error",
 ]
 
 
@@ -137,6 +137,8 @@ def estimate_rotation(ref: np.ndarray, mov: np.ndarray) -> tuple[float, float]:
 def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int, sigma: float = SMOOTH_SIGMA,
             span: tuple = (0.15, 0.85)) -> dict:
     """Header and image-based offsets of one series against a reference series."""
+    z_rebased, z_shift = rebase_z(hdr["z"], ref_hdr["z"][0])  # a different table frame: anchor on the reference
+    hdr = {**hdr, "z": z_rebased}
     n_ref, n = len(ref_hdr["z"]), len(hdr["z"])
     wanted = np.unique(np.round(np.linspace(span[0], span[1], n_check) * (n_ref - 1)).astype(int))
 
@@ -189,6 +191,7 @@ def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int
         "iop_dev": hdr["iop_dev"],
         "tilt_deg": hdr["tilt_deg"],
         "z_irregular_mm": hdr["z_irregular_mm"],
+        "z_rebased_mm": z_shift,
     }
 
 
