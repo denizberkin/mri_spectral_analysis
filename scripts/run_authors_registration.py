@@ -16,9 +16,11 @@ Their steps per series
   2. decide whether the z axis is flipped (rolled SSIM of the volume and of its flipped copy vs the reference).
   3. find_shifts: circular roll along z in steps of 4 slices, lowest RMSE against the reference.
   4. crop [13:323, 120:395, 64:445] and rigid elastix registration to the reference (cubic B-spline resampling).
-  5. fallback: if SSIM(after, cropped) < SSIM(before, WHOLE volume) the unregistered crop is saved instead.
-     The two SSIMs are computed on different regions; ssim_before_crop is the like-for-like number
-     and fallback_like_for_like tells what the rule would give with it. Their rule is what is applied.
+  5. fallback: their rule saves the unregistered crop if SSIM(after, cropped) < SSIM(before, WHOLE volume).
+     The two SSIMs are computed on different regions (the whole volume includes easy air), so a good registration
+     can be thrown away (seen on F1: crop SSIM 0.39 -> 0.50, yet fallback). --fallback_rule picks the rule applied:
+     authors (theirs), like_for_like (cropped before vs cropped after; default here) or never.
+     Both decisions are always logged (fallback_authors, fallback_like_for_like).
 
 Output per series: <out_dir>/<scanner>_<dose>mGy_<recon>_rep<NN>.nii.gz (float32; theirs is float64) and a
 row in <out_dir>/registration_log.csv.
@@ -49,7 +51,7 @@ SSIM_DATA_RANGE = 2000
 COLUMNS = [
     "scanner", "dose_mgy", "recon", "repeat", "series_uid", "out_file", "flipped", "ssim_raw", "ssim_roll_a",
     "ssim_roll_b", "roll_slices", "ssim_before_full", "ssim_before_crop", "ssim_after", "fallback",
-    "fallback_like_for_like", "seconds", "error",
+    "fallback_authors", "fallback_like_for_like", "seconds", "error",
 ]
 
 
@@ -69,7 +71,8 @@ def load_authors(repo: Path) -> SimpleNamespace:
     )
 
 
-def register_one(folder: Path, out_file: Path, ref: SimpleNamespace, registrator, t: SimpleNamespace) -> dict:
+def register_one(folder: Path, out_file: Path, ref: SimpleNamespace, registrator, t: SimpleNamespace,
+                 fallback_rule: str = "like_for_like") -> dict:
     """Their loop body. Returns the log values."""
     log = {}
     volumes = t.read_dicom(str(folder), numpy_format=True, crop_region=None)
@@ -99,8 +102,9 @@ def register_one(folder: Path, out_file: Path, ref: SimpleNamespace, registrator
     log["ssim_after"] = t.ssim(ref_t, registered_t).item()
     log["ssim_before_crop"] = t.ssim(ref_t, t.array_to_tensor(volume.transpose(1, 2, 0))).item()
 
-    log["fallback"] = int(log["ssim_after"] < log["ssim_before_full"])  # their rule
+    log["fallback_authors"] = int(log["ssim_after"] < log["ssim_before_full"])  # their rule
     log["fallback_like_for_like"] = int(log["ssim_after"] < log["ssim_before_crop"])
+    log["fallback"] = {"authors": log["fallback_authors"], "like_for_like": log["fallback_like_for_like"], "never": 0}[fallback_rule]
     if log["fallback"]:
         registered = volume
 
@@ -129,6 +133,8 @@ def main() -> None:
     parser.add_argument("--ref_repeat", type=int, default=1,
                         help="their reference folder name does not say which of the 10 repeats it was "
                              "(the StudyTime 174008.691 is shared by all of them); the repeats agree to ~0.1 mm.")
+    parser.add_argument("--fallback_rule", choices=["authors", "like_for_like", "never"], default="like_for_like",
+                        help="when the unregistered crop is saved instead of the registered volume (see the docstring).")
     parser.add_argument("--shard", default="0/1", help="K/N: this process takes every N-th series (start N processes).")
     parser.add_argument("--limit", type=int, default=None, help="stop after this many series (benchmark).")
     args = parser.parse_args()
@@ -168,7 +174,7 @@ def main() -> None:
                     "repeat": row["repeat"], "series_uid": row["series_uid"], "out_file": name}
             start = time.time()
             try:
-                result = register_one(data_dir / row["series_dir"], out_file, ref, registrator, t)
+                result = register_one(data_dir / row["series_dir"], out_file, ref, registrator, t, args.fallback_rule)
                 error = ""
             except Exception as exc:  # logged per series; the run goes on
                 result, error = {}, f"{type(exc).__name__}: {exc}"
