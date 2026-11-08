@@ -16,7 +16,8 @@ Per pair this writes (shifts are what to apply to the SOURCE to land on the TARG
     dz_mm              sample the source at (target z + dz_mm)
     needs_shift        |shift| > --shift_tol_px   (otherwise the pair can be used as is in-plane)
     needs_z            |dz| > --z_tol_mm          (only if a z table was given)
-    excluded_reason    a scan that sits somewhere else entirely (outlier), or has not been checked
+    excluded_reason    a scan that sits somewhere else entirely (outlier), a series with missing slices
+                       (irregular_z), or a scan that has not been checked
     usable             not excluded, not unchecked
 
 --pairing matched pairs repeat k with repeat k; all pairs every source repeat with every target repeat.
@@ -67,6 +68,19 @@ def load_alignment(path: Path) -> dict:
     return best
 
 
+def load_irregular(path: Path, tol_mm: float) -> set:
+    """(scanner, recon, dose, repeat) of series with missing/irregular slices (z_irregular_mm > tol_mm).
+    Per series, not per scan: the gap sits in one reconstruction only."""
+    bad = set()
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("error"):
+                continue
+            if _float(row.get("z_irregular_mm", "")) > tol_mm:
+                bad.add((row["scanner"], row["recon"], int(row["dose_mgy"]), int(row["repeat"])))
+    return bad
+
+
 def load_z(path: Path) -> tuple[dict, set]:
     """(scanner, dose, repeat) -> dz_mm, and the set of reference scans."""
     dz, refs = {}, set()
@@ -108,6 +122,7 @@ def build(args) -> list[dict]:
     index = select(read_index(args.index), scanners=args.scanners, recons=args.recons)
     align = load_alignment(Path(args.alignment))
     zinfo, z_refs = load_z(Path(args.z)) if args.z else (None, set())
+    irregular = load_irregular(Path(args.alignment), args.max_z_irregular_mm)
 
     # the alignment check's reference: highest dose, lowest repeat (the z check marks it explicitly)
     refs = set(z_refs)
@@ -139,6 +154,9 @@ def build(args) -> list[dict]:
                     dz = s["dz"] - t["dz"]
                     shift = float(np.hypot(dy, dx))
                     reason = s["reason"] or t["reason"]
+                    if not reason and ((scanner, recon, dose, rs) in irregular
+                                       or (scanner, recon, args.target_dose, rt) in irregular):
+                        reason = "irregular_z"
                     pairs.append({
                         "scanner": scanner, "recon": recon, "src_dose": dose, "tgt_dose": args.target_dose,
                         "src_repeat": rs, "tgt_repeat": rt,
@@ -182,6 +200,8 @@ def main() -> None:
     parser.add_argument("--z_tol_mm", type=float, default=0.5)
     parser.add_argument("--min_ncc", type=float, default=0.9, help="below this a scan counts as an outlier.")
     parser.add_argument("--max_shift_mm", type=float, default=10.0, help="in-plane shift above this = outlier.")
+    parser.add_argument("--max_z_irregular_mm", type=float, default=0.05,
+                        help="a series whose slice spacing deviates by more than this (a missing slice) is excluded.")
     parser.add_argument("--max_hdr_z_slices", type=float, default=50.0, help="header z offset above this = outlier.")
     args = parser.parse_args()
 
