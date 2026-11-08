@@ -19,8 +19,21 @@ with that scanner's reference scan (highest selected dose, FBP, lowest selected 
 IR/DL series are also compared with the FBP series of the SAME scan (the "twin"), which should
 agree exactly: that tests the assumption that the reconstructions of one scan share a grid.
 
-The thresholds are not calibrated on real data: read the first run as a calibration run.
-Only a few slices per series are read; all headers are read (fast).
+What the numbers can and cannot tell you (assumptions):
+  * Geometry is assumed plain axial: slices are sorted by ImagePositionPatient[2]. iop_dev (largest deviation of
+    ImageOrientationPatient from axial), tilt_deg (GantryDetectorTilt) and z_irregular_mm (largest deviation of the
+    slice step from its median) report whether that holds; they should be ~0.
+  * Only --n_check slices spread over --span of the volume are read, so a local problem elsewhere can be missed.
+    shift_spread_px (std of the shift over those slices) grows if the phantom is tilted along z.
+  * The model is a translation. rot_deg is the in-plane rotation (scipy.ndimage.rotate convention, on one slice)
+    that best matches after re-estimating the translation, and rot_ncc_gain how much it improves the correlation.
+    0.1 deg is about 0.2 px at 100 px from the centre. It is not a full rigid or deformable registration.
+  * ncc is computed on smoothed copies (--smooth_sigma) and, like any correlation, stays high on smooth structure
+    and uniform background: it says the structures match, not that the noise or the grid is identical.
+  * Interpolation (shifts, rotations) is used only on throw-away copies to score the match. Nothing is saved; the
+    training pairs and the NPS use the original pixels.
+  * The thresholds are not calibrated on real data: read the first run as a calibration run. The output is
+    measurements, not an accept/reject decision.
 
 Usage:
     python scripts/check_ct4h_alignment.py --index /path/ct4h_index.csv
@@ -49,27 +62,41 @@ CLIP = HU_RANGE  # same range as the dataset authors' code
 SMOOTH_SIGMA = 1.5
 COLUMNS = [
     "scanner", "dose_mgy", "recon", "repeat", "vs", "n_slices", "hdr_z_off", "img_z_off",
-    "z_ncc_best", "z_ncc_next", "shift_y_px", "shift_x_px", "shift_mm", "shift_spread_px", "ncc", "slices_used", "error",
+    "z_ncc_best", "z_ncc_next", "shift_y_px", "shift_x_px", "shift_mm", "shift_spread_px", "ncc", "slices_used",
+    "rot_deg", "rot_ncc_gain", "iop_dev", "tilt_deg", "z_irregular_mm", "error",
 ]
 
 
 def read_headers(series_dir: Path) -> dict:
-    """z-sorted slice paths and positions of one series (no pixel data)."""
+    """z-sorted slice paths and positions of one series (no pixel data), plus geometry sanity values."""
     entries = []
+    tilt = 0.0
+    iop_dev = 0.0
+    axial = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
     for path in series_dir.iterdir():
         if path.suffix.lower() != ".dcm":
             continue
-        ds = pydicom.dcmread(path, stop_before_pixels=True, specific_tags=["ImagePositionPatient", "PixelSpacing"])
-        entries.append((float(ds.ImagePositionPatient[2]), path, float(ds.PixelSpacing[0])))
+        ds = pydicom.dcmread(
+            path, stop_before_pixels=True,
+            specific_tags=["ImagePositionPatient", "PixelSpacing", "ImageOrientationPatient", "GantryDetectorTilt"],
+        )
+        entries.append((float(ds.ImagePositionPatient[2]), path, [float(v) for v in ds.PixelSpacing]))
+        if "ImageOrientationPatient" in ds:
+            iop_dev = max(iop_dev, float(np.abs(np.array([float(v) for v in ds.ImageOrientationPatient]) - axial).max()))
+        tilt = max(tilt, abs(float(getattr(ds, "GantryDetectorTilt", 0.0) or 0.0)))
     if not entries:
         raise FileNotFoundError(f"No .dcm files in {series_dir}")
     entries.sort(key=lambda e: e[0])
     z = np.array([e[0] for e in entries])
+    steps = np.diff(z)
     return {
         "z": z,
         "paths": [e[1] for e in entries],
-        "spacing": float(np.median(np.diff(z))) if len(z) > 1 else float("nan"),
-        "pixel_mm": entries[0][2],
+        "spacing": float(np.median(steps)) if len(z) > 1 else float("nan"),
+        "pixel_mm": entries[0][2],  # [row spacing (along y), column spacing (along x)]
+        "iop_dev": iop_dev,        # largest deviation of ImageOrientationPatient from plain axial; 0 = axial
+        "tilt_deg": tilt,          # largest |GantryDetectorTilt|
+        "z_irregular_mm": float(np.abs(steps - np.median(steps)).max()) if len(z) > 2 else 0.0,
     }
 
 
@@ -92,10 +119,26 @@ def register(ref: np.ndarray, mov: np.ndarray) -> tuple[np.ndarray, float]:
     return np.asarray(shift, dtype=float), float(np.corrcoef(ref.ravel(), moved.ravel())[0, 1])
 
 
-def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int, sigma: float = SMOOTH_SIGMA) -> dict:
+def estimate_rotation(ref: np.ndarray, mov: np.ndarray) -> tuple[float, float]:
+    """In-plane rotation (deg, scipy.ndimage.rotate convention) that best matches ``mov`` to ``ref`` once the
+    translation is re-estimated at each angle, and the correlation gain over no rotation."""
+    def score(angle: float) -> float:
+        rotated = mov if angle == 0 else ndimage.rotate(mov, angle, reshape=False, order=1, mode="nearest")
+        return register(ref, rotated)[1]
+
+    base = score(0.0)
+    coarse = {a: score(a) for a in np.arange(-1.0, 1.0001, 0.25)}
+    centre = max(coarse, key=coarse.get)
+    fine = {a: score(a) for a in np.arange(centre - 0.2, centre + 0.2001, 0.05)}
+    best = max(fine, key=fine.get)
+    return float(best), float(fine[best] - base)
+
+
+def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int, sigma: float = SMOOTH_SIGMA,
+            span: tuple = (0.15, 0.85)) -> dict:
     """Header and image-based offsets of one series against a reference series."""
     n_ref, n = len(ref_hdr["z"]), len(hdr["z"])
-    wanted = np.unique(np.round(np.linspace(0.3, 0.7, n_check) * (n_ref - 1)).astype(int))
+    wanted = np.unique(np.round(np.linspace(span[0], span[1], n_check) * (n_ref - 1)).astype(int))
 
     def ref_slice(i: int) -> np.ndarray:
         if i not in ref_cache:
@@ -128,6 +171,7 @@ def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int
         raise ValueError("no overlapping slices to compare")
     shifts = np.array(shifts)
     median = np.median(shifts, axis=0)
+    rot_deg, rot_gain = estimate_rotation(ref_slice(anchor), load_slice(hdr["paths"][j0 + shift_offset], sigma))
     return {
         "n_slices": n,
         "hdr_z_off": float((hdr["z"][0] - ref_hdr["z"][0]) / ref_hdr["spacing"]),
@@ -136,10 +180,15 @@ def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int
         "z_ncc_next": float(z_next),
         "shift_y_px": float(median[0]),
         "shift_x_px": float(median[1]),
-        "shift_mm": float(np.hypot(*median) * hdr["pixel_mm"]),
+        "shift_mm": float(np.hypot(median[0] * hdr["pixel_mm"][0], median[1] * hdr["pixel_mm"][1])),
         "shift_spread_px": float(np.std(np.hypot(shifts[:, 0], shifts[:, 1]))),
         "ncc": float(np.median(nccs)),
         "slices_used": len(shifts),
+        "rot_deg": rot_deg,
+        "rot_ncc_gain": rot_gain,
+        "iop_dev": hdr["iop_dev"],
+        "tilt_deg": hdr["tilt_deg"],
+        "z_irregular_mm": hdr["z_irregular_mm"],
     }
 
 
@@ -172,7 +221,7 @@ def process_scanner(task: dict) -> list[dict]:
                 comparisons.append(("twin", hdr_of(twin), {}))
         for label, other_hdr, cache in comparisons:
             try:
-                result = compare(other_hdr, hdr_of(row), cache, task["n_check"], task["window"], task["sigma"])
+                result = compare(other_hdr, hdr_of(row), cache, task["n_check"], task["window"], task["sigma"], task["span"])
                 out.append({**base, "vs": label, **result, "error": ""})
             except Exception as error:  # report per series, keep going
                 out.append({**base, "vs": label, "error": f"{type(error).__name__}: {error}"})
@@ -201,6 +250,18 @@ def summarize(results: list[dict]) -> None:
 
     table("ref")
     table("twin")
+
+    print("\n--- geometry sanity per scanner (max over all comparisons)")
+    print(f"{'scanner':8}{'spread_px':>10}{'|rot_deg|':>10}{'rot_gain':>10}{'iop_dev':>9}{'tilt_deg':>9}{'z_irreg_mm':>11}")
+    for scanner in SCANNERS:
+        rows = [r for r in ok if r["scanner"] == scanner]
+        if not rows:
+            continue
+        print(
+            f"{scanner:8}{max(r['shift_spread_px'] for r in rows):>10.2f}{max(abs(r['rot_deg']) for r in rows):>10.2f}"
+            f"{max(r['rot_ncc_gain'] for r in rows):>10.4f}{max(r['iop_dev'] for r in rows):>9.3f}"
+            f"{max(r['tilt_deg'] for r in rows):>9.2f}{max(r['z_irregular_mm'] for r in rows):>11.3f}"
+        )
     low_ncc = [r for r in ok if r["ncc"] < 0.5]
     if low_ncc:
         print(f"\n{len(low_ncc)} comparisons with ncc < 0.5 (shift unreliable); first 10:")
@@ -219,7 +280,9 @@ def main() -> None:
     parser.add_argument("--doses", nargs="+", type=int, choices=DOSES, default=[1, 6, 14])
     parser.add_argument("--recons", nargs="+", choices=RECONS, default=["FBP", "IR"])
     parser.add_argument("--repeats", nargs="+", type=int, default=[1, 2, 3])
-    parser.add_argument("--n_check", type=int, default=5, help="slices per series for the in-plane shift.")
+    parser.add_argument("--n_check", type=int, default=9, help="slices per series for the in-plane shift.")
+    parser.add_argument("--span", nargs=2, type=float, default=[0.15, 0.85], metavar=("LO", "HI"),
+                        help="the checked slices are spread over this fraction of the volume along z.")
     parser.add_argument("--window", type=int, default=6, help="+/- slices searched for the image-based z offset (not an HU window).")
     parser.add_argument("--smooth_sigma", type=float, default=SMOOTH_SIGMA,
                         help="Gaussian sigma (px) on a copy of each slice used only for the shift estimate; 0 = none.")
@@ -236,7 +299,7 @@ def main() -> None:
         sys.exit("No series match the selection.")
     tasks = [
         {"scanner": s, "rows": [r for r in rows if r["scanner"] == s], "data_dir": args.data_dir,
-         "n_check": args.n_check, "window": args.window, "sigma": args.smooth_sigma}
+         "n_check": args.n_check, "window": args.window, "sigma": args.smooth_sigma, "span": tuple(args.span)}
         for s in args.scanners if any(r["scanner"] == s for r in rows)
     ]
     print(f"{len(rows)} series on {len(tasks)} scanners")
