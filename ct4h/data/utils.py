@@ -3,6 +3,10 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+# HU range kept by the dataset authors' code (Harmonization-Dataset utils.read_dicom: level 500, window 3000),
+# and the range their PSNR (max 2000) and SSIM (data_range 3000) are defined on. Use it everywhere.
+HU_RANGE = (-1000.0, 2000.0)
+
 DOSES = [1, 3, 6, 10, 14]          # nominal mGy, from the series description
 RECONS = ["FBP", "IR", "DL"]       # DL exists only on scanners D1 and E2
 SCANNERS = ["A1", "A2", "B1", "B2", "C1", "D1", "E1", "E2", "F1", "G1", "G2", "H1", "H2"]

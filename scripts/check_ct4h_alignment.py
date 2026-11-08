@@ -41,10 +41,12 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ct4h.data.utils import DOSES, RECONS, SCANNERS, read_index, select
+from ct4h.data.utils import DOSES, HU_RANGE, RECONS, SCANNERS, read_index, select
 
-CLIP = (-1000.0, 1000.0)
-SMOOTH_SIGMA = 1.5  # px; keeps the 1 mGy noise from driving the correlation
+CLIP = HU_RANGE  # same range as the dataset authors' code
+# Gaussian smoothing (px) applied to a COPY of each slice, only to estimate the shift: at 1 mGy the noise would
+# otherwise drive the correlation. Nothing smoothed is saved; 0 turns it off. See --smooth_sigma.
+SMOOTH_SIGMA = 1.5
 COLUMNS = [
     "scanner", "dose_mgy", "recon", "repeat", "vs", "n_slices", "hdr_z_off", "img_z_off",
     "z_ncc_best", "z_ncc_next", "shift_y_px", "shift_x_px", "shift_mm", "shift_spread_px", "ncc", "slices_used", "error",
@@ -71,12 +73,13 @@ def read_headers(series_dir: Path) -> dict:
     }
 
 
-def load_slice(path: Path) -> np.ndarray:
+def load_slice(path: Path, sigma: float = SMOOTH_SIGMA) -> np.ndarray:
     ds = pydicom.dcmread(path)
     hu = ds.pixel_array.astype(np.float32) * float(getattr(ds, "RescaleSlope", 1.0)) + float(
         getattr(ds, "RescaleIntercept", 0.0)
     )
-    return ndimage.gaussian_filter(np.clip(hu, *CLIP), SMOOTH_SIGMA)
+    hu = np.clip(hu, *CLIP)
+    return ndimage.gaussian_filter(hu, sigma) if sigma > 0 else hu
 
 
 def register(ref: np.ndarray, mov: np.ndarray) -> tuple[np.ndarray, float]:
@@ -89,14 +92,14 @@ def register(ref: np.ndarray, mov: np.ndarray) -> tuple[np.ndarray, float]:
     return np.asarray(shift, dtype=float), float(np.corrcoef(ref.ravel(), moved.ravel())[0, 1])
 
 
-def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int) -> dict:
+def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int, sigma: float = SMOOTH_SIGMA) -> dict:
     """Header and image-based offsets of one series against a reference series."""
     n_ref, n = len(ref_hdr["z"]), len(hdr["z"])
     wanted = np.unique(np.round(np.linspace(0.3, 0.7, n_check) * (n_ref - 1)).astype(int))
 
     def ref_slice(i: int) -> np.ndarray:
         if i not in ref_cache:
-            ref_cache[i] = load_slice(ref_hdr["paths"][i])
+            ref_cache[i] = load_slice(ref_hdr["paths"][i], sigma)
         return ref_cache[i]
 
     # the most informative reference slice: highest std (empty slices correlate with everything)
@@ -107,7 +110,7 @@ def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int
     offsets = [o for o in range(-window, window + 1) if 0 <= j0 + o < n]
     scores = []
     for o in offsets:
-        scores.append(register(ref_slice(anchor), load_slice(hdr["paths"][j0 + o]))[1])
+        scores.append(register(ref_slice(anchor), load_slice(hdr["paths"][j0 + o], sigma))[1])
     best = int(np.argmax(scores))
     shift_offset = offsets[best]
     neighbours = [scores[k] for k in (best - 1, best + 1) if 0 <= k < len(scores)]
@@ -118,7 +121,7 @@ def compare(ref_hdr: dict, hdr: dict, ref_cache: dict, n_check: int, window: int
         j = nearest(i) + shift_offset
         if not 0 <= j < n:
             continue
-        shift, ncc = register(ref_slice(int(i)), load_slice(hdr["paths"][j]))
+        shift, ncc = register(ref_slice(int(i)), load_slice(hdr["paths"][j], sigma))
         shifts.append(shift)
         nccs.append(ncc)
     if not shifts:
@@ -169,7 +172,7 @@ def process_scanner(task: dict) -> list[dict]:
                 comparisons.append(("twin", hdr_of(twin), {}))
         for label, other_hdr, cache in comparisons:
             try:
-                result = compare(other_hdr, hdr_of(row), cache, task["n_check"], task["window"])
+                result = compare(other_hdr, hdr_of(row), cache, task["n_check"], task["window"], task["sigma"])
                 out.append({**base, "vs": label, **result, "error": ""})
             except Exception as error:  # report per series, keep going
                 out.append({**base, "vs": label, "error": f"{type(error).__name__}: {error}"})
@@ -217,7 +220,9 @@ def main() -> None:
     parser.add_argument("--recons", nargs="+", choices=RECONS, default=["FBP", "IR"])
     parser.add_argument("--repeats", nargs="+", type=int, default=[1, 2, 3])
     parser.add_argument("--n_check", type=int, default=5, help="slices per series for the in-plane shift.")
-    parser.add_argument("--window", type=int, default=6, help="+/- slices searched for the image-based z offset.")
+    parser.add_argument("--window", type=int, default=6, help="+/- slices searched for the image-based z offset (not an HU window).")
+    parser.add_argument("--smooth_sigma", type=float, default=SMOOTH_SIGMA,
+                        help="Gaussian sigma (px) on a copy of each slice used only for the shift estimate; 0 = none.")
     parser.add_argument("--workers", type=int, default=4, help="processes, one scanner each.")
     args = parser.parse_args()
 
@@ -231,7 +236,7 @@ def main() -> None:
         sys.exit("No series match the selection.")
     tasks = [
         {"scanner": s, "rows": [r for r in rows if r["scanner"] == s], "data_dir": args.data_dir,
-         "n_check": args.n_check, "window": args.window}
+         "n_check": args.n_check, "window": args.window, "sigma": args.smooth_sigma}
         for s in args.scanners if any(r["scanner"] == s for r in rows)
     ]
     print(f"{len(rows)} series on {len(tasks)} scanners")
