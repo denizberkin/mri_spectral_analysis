@@ -19,6 +19,7 @@ KEEP = ["scanner", "dose_mgy", "recon", "repeat", "out_file", "series_uid", "fli
         "ssim_raw", "ssim_after", "fallback", "seconds", "note"]
 NOTE_E2 = "E2: on some scans y_high is ~1 mm off in z vs A1 (matched pairs <= ~0.75 mm); accepted as a known limitation"
 NOTE_FORCED = "roll forced (authors' roll search flipped between 4 and 8 on noisy scans)"
+NOTE_TWIN = "roll taken from the FBP twin of the same scan"
 
 
 def main() -> None:
@@ -52,17 +53,24 @@ def main() -> None:
     failed = failed[[tuple(r) not in done for r in failed[KEY].values]]
 
     ok["roll_forced"] = ok["roll_forced"].fillna(0).astype(int)
-    ok["note"] = ""
-    ok.loc[ok["scanner"] == "E2", "note"] = NOTE_E2
-    ok.loc[ok["roll_forced"] == 1, "note"] = NOTE_FORCED
+    def note(row) -> str:
+        parts = [NOTE_E2] if row["scanner"] == "E2" else []
+        if row["roll_forced"] == 1:
+            parts.append(NOTE_FORCED)
+        elif row["roll_forced"] == 2:
+            parts.append(NOTE_TWIN)
+        return "; ".join(parts)
+
+    ok["note"] = ok.apply(note, axis=1)
     ok = ok.sort_values(KEY)[KEEP]
     out = Path(args.out) if args.out else reg / "registration_manifest.csv"
     ok.to_csv(out, index=False)
 
     print(f"wrote {out}: {len(ok)} volumes")
-    print(ok.groupby("scanner").agg(n=("out_file", "size"), fallback=("fallback", "sum"),
-                                    roll=("roll_slices", lambda s: sorted(set(s.astype(int)))),
-                                    forced=("roll_forced", "sum")).to_string())
+    print(ok.groupby(["recon", "scanner"]).agg(n=("out_file", "size"), fallback=("fallback", "sum"),
+                                              roll=("roll_slices", lambda s: sorted(set(s.astype(int)))),
+                                              forced=("roll_forced", lambda s: int((s == 1).sum())),
+                                              from_twin=("roll_forced", lambda s: int((s == 2).sum()))).to_string())
     if len(failed):
         print("no registered volume (error in the log):")
         print(failed[KEY + ["error"]].to_string(index=False))

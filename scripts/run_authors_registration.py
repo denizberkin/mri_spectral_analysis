@@ -26,6 +26,10 @@ Their steps per series
      of 4 slices and, on noisy low-dose F1 scans, flips between 4 and 8 (15/50 F1 scans got 8, leaving a 1.28 mm
      z offset; the raw headers say all F1 scans start at the same z). Logged in roll_forced.
 
+  --roll_from <registration_manifest.csv> gives every series the roll its FBP twin got (same scan, same grid), looked
+     up by scanner, dose and repeat; series without a twin in the manifest keep their own search. Use it for IR and DL
+     so the three reconstructions of one acquisition are rolled identically. Logged as roll_forced = 2.
+
 Output per series: <out_dir>/<scanner>_<dose>mGy_<recon>_rep<NN>.nii.gz (float32; theirs is float64) and a
 row in <out_dir>/registration_log.csv.
 
@@ -76,7 +80,7 @@ def load_authors(repo: Path) -> SimpleNamespace:
 
 
 def register_one(folder: Path, out_file: Path, ref: SimpleNamespace, registrator, t: SimpleNamespace,
-                 fallback_rule: str = "like_for_like", forced_roll: int | None = None) -> dict:
+                 fallback_rule: str = "like_for_like", forced_roll: int | None = None, roll_source: int = 1) -> dict:
     """Their loop body. Returns the log values."""
     log = {}
     volumes = t.read_dicom(str(folder), numpy_format=True, crop_region=None)
@@ -97,7 +101,7 @@ def register_one(folder: Path, out_file: Path, ref: SimpleNamespace, registrator
         volumes[0] = t.torch.roll(volumes[0], shifts=shift, dims=-1)
     volumes[1] = np.roll(volumes[1], shift, axis=0)
     log["roll_slices"] = int(shift)
-    log["roll_forced"] = int(forced_roll is not None)
+    log["roll_forced"] = 0 if forced_roll is None else roll_source
     log["ssim_before_full"] = t.ssim(ref.volumes[0], volumes[0]).item()
 
     c = CROP
@@ -134,7 +138,7 @@ def main() -> None:
     parser.add_argument("--scanners", nargs="+", choices=SCANNERS, default=SCANNERS)
     parser.add_argument("--doses", nargs="+", type=int, choices=DOSES, default=DOSES)
     parser.add_argument("--recons", nargs="+", choices=RECONS, default=["FBP"],
-                        help="FBP only by default: FBP/IR/DL of one scan share a grid (twin test).")
+                        help="reconstructions to register (the authors use all of them). Default FBP; run IR DL afterwards with --roll_from.")
     parser.add_argument("--repeats", nargs="+", type=int, default=list(range(1, 11)))
     parser.add_argument("--ref_scanner", default="A1")
     parser.add_argument("--ref_dose", type=int, default=10)
@@ -146,6 +150,8 @@ def main() -> None:
                         help="when the unregistered crop is saved instead of the registered volume (see the docstring).")
     parser.add_argument("--force_roll", nargs="+", default=[], metavar="SCANNER=SLICES",
                         help="use this circular z roll for the scanner instead of their search (e.g. F1=4).")
+    parser.add_argument("--roll_from", default=None, metavar="MANIFEST.csv",
+                        help="take each series' roll from its FBP twin in this manifest (for --recons IR DL).")
     parser.add_argument("--log_name", default=None, help="log file name (default registration_log_<K>of<N>.csv).")
     parser.add_argument("--shard", default="0/1", help="K/N: this process takes every N-th series (start N processes).")
     parser.add_argument("--limit", type=int, default=None, help="stop after this many series (benchmark).")
@@ -153,6 +159,12 @@ def main() -> None:
 
     shard, n_shards = (int(v) for v in args.shard.split("/"))
     forced = {k: int(v) for k, v in (item.split("=") for item in args.force_roll)}
+    twin_roll = {}
+    if args.roll_from:
+        manifest = csv.DictReader(open(args.roll_from, newline="", encoding="utf-8"))
+        twin_roll = {(r["scanner"], int(r["dose_mgy"]), int(r["repeat"])): int(float(r["roll_slices"]))
+                     for r in manifest if r["recon"] == "FBP"}
+        print(f"--roll_from: {len(twin_roll)} FBP rolls read from {args.roll_from}")
     data_dir, out_dir = Path(args.data_dir), Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -187,8 +199,13 @@ def main() -> None:
                     "repeat": row["repeat"], "series_uid": row["series_uid"], "out_file": name}
             start = time.time()
             try:
+                twin = twin_roll.get((row["scanner"], row["dose_mgy"], row["repeat"]))
+                if twin is not None:
+                    roll, source = twin, 2
+                else:
+                    roll, source = forced.get(row["scanner"]), 1
                 result = register_one(data_dir / row["series_dir"], out_file, ref, registrator, t, args.fallback_rule,
-                                      forced.get(row["scanner"]))
+                                      roll, source)
                 error = ""
             except Exception as exc:  # logged per series; the run goes on
                 result, error = {}, f"{type(exc).__name__}: {exc}"

@@ -8,7 +8,7 @@ scanned on 13 scanners, 5 doses (1, 3, 6, 10, 14 mGy), 10 repeats; FBP, IR and (
 
 | use | data |
 |---|---|
-| training / paired evaluation | the dataset authors' registered volumes (below), FBP only |
+| training / paired evaluation | the dataset authors' registered volumes (below) |
 | NPS, power spectra, error spectra | raw DICOM pixels (unclipped HU, no interpolation). Their z resampling and B-spline interpolation low-pass the noise, so spectra of the registered volumes are not the scanner's. Measuring that change is a result in itself. |
 
 All metrics use `ct4h.data.utils.HU_RANGE = (-1000, 2000)`, the range the authors' code keeps.
@@ -47,6 +47,10 @@ python scripts/make_ct4h_manifest.py --reg_dir <authors_registered>
 Output: `<scanner>_<dose>mGy_<recon>_rep<NN>.nii.gz` (float32, shape z x y x x = 310 x 275 x 381) and
 `registration_manifest.csv`. Read the manifest, not the folder.
 
+The authors' own script registers every reconstruction (`reconstruction_method = '*'`). We registered FBP first
+(`--recons FBP`, the default), then IR and DL with `--roll_from`, so that the three reconstructions of one scan share
+its FBP roll.
+
 Options added on top of the authors' code:
 
 - `--fallback_rule`: their rule drops a good registration (it compares the whole-volume SSIM before with the cropped
@@ -57,6 +61,10 @@ Options added on top of the authors' code:
   flipped between 4 and 8 (15 of 50 scans got 8), which left a constant 1.28 mm (one native slice) z offset. Those
   15 were rerun with `--force_roll F1=4`, the value the other 35 chose on their own. The roll is constant per
   scanner for 11 of 13 scanners (A1 0, A2 0, B1 4, B2 0, C1 0, D1 12, E1 8, G1 0, G2 0, H1 0, H2 4).
+
+- `--roll_from <registration_manifest.csv>`: each series takes the roll its FBP twin got (same scan, same grid;
+  looked up by scanner, dose and repeat). Used for `--recons IR DL`, because the roll search is noisy and would
+  otherwise be free to differ between reconstructions of one acquisition. Logged as `roll_forced = 2`.
 
 ## Checked and known
 
