@@ -22,6 +22,10 @@ Their steps per series
      authors (theirs), like_for_like (cropped before vs cropped after; default here) or never.
      Both decisions are always logged (fallback_authors, fallback_like_for_like).
 
+  --force_roll SCANNER=SLICES replaces step 3 for that scanner by a fixed roll. Added because step 3 only tries multiples
+     of 4 slices and, on noisy low-dose F1 scans, flips between 4 and 8 (15/50 F1 scans got 8, leaving a 1.28 mm
+     z offset; the raw headers say all F1 scans start at the same z). Logged in roll_forced.
+
 Output per series: <out_dir>/<scanner>_<dose>mGy_<recon>_rep<NN>.nii.gz (float32; theirs is float64) and a
 row in <out_dir>/registration_log.csv.
 
@@ -50,7 +54,7 @@ CROP = [13, 323, 120, 395, 64, 445]
 SSIM_DATA_RANGE = 2000
 COLUMNS = [
     "scanner", "dose_mgy", "recon", "repeat", "series_uid", "out_file", "flipped", "ssim_raw", "ssim_roll_a",
-    "ssim_roll_b", "roll_slices", "ssim_before_full", "ssim_before_crop", "ssim_after", "fallback",
+    "ssim_roll_b", "roll_slices", "roll_forced", "ssim_before_full", "ssim_before_crop", "ssim_after", "fallback",
     "fallback_authors", "fallback_like_for_like", "seconds", "error",
 ]
 
@@ -72,7 +76,7 @@ def load_authors(repo: Path) -> SimpleNamespace:
 
 
 def register_one(folder: Path, out_file: Path, ref: SimpleNamespace, registrator, t: SimpleNamespace,
-                 fallback_rule: str = "like_for_like") -> dict:
+                 fallback_rule: str = "like_for_like", forced_roll: int | None = None) -> dict:
     """Their loop body. Returns the log values."""
     log = {}
     volumes = t.read_dicom(str(folder), numpy_format=True, crop_region=None)
@@ -86,9 +90,14 @@ def register_one(folder: Path, out_file: Path, ref: SimpleNamespace, registrator
         volumes[0] = volumes[2]
         volumes[1] = volumes[3]
 
-    volumes[0], shift, _ = t.find_shifts(volumes[0], ref.volumes[0], axis=-1)
+    if forced_roll is None:
+        volumes[0], shift, _ = t.find_shifts(volumes[0], ref.volumes[0], axis=-1)
+    else:  # their roll search only tries multiples of 4 slices and noise can flip it between neighbours
+        shift = int(forced_roll)
+        volumes[0] = t.torch.roll(volumes[0], shifts=shift, dims=-1)
     volumes[1] = np.roll(volumes[1], shift, axis=0)
     log["roll_slices"] = int(shift)
+    log["roll_forced"] = int(forced_roll is not None)
     log["ssim_before_full"] = t.ssim(ref.volumes[0], volumes[0]).item()
 
     c = CROP
@@ -135,11 +144,15 @@ def main() -> None:
                              "(the StudyTime 174008.691 is shared by all of them); the repeats agree to ~0.1 mm.")
     parser.add_argument("--fallback_rule", choices=["authors", "like_for_like", "never"], default="like_for_like",
                         help="when the unregistered crop is saved instead of the registered volume (see the docstring).")
+    parser.add_argument("--force_roll", nargs="+", default=[], metavar="SCANNER=SLICES",
+                        help="use this circular z roll for the scanner instead of their search (e.g. F1=4).")
+    parser.add_argument("--log_name", default=None, help="log file name (default registration_log_<K>of<N>.csv).")
     parser.add_argument("--shard", default="0/1", help="K/N: this process takes every N-th series (start N processes).")
     parser.add_argument("--limit", type=int, default=None, help="stop after this many series (benchmark).")
     args = parser.parse_args()
 
     shard, n_shards = (int(v) for v in args.shard.split("/"))
+    forced = {k: int(v) for k, v in (item.split("=") for item in args.force_roll)}
     data_dir, out_dir = Path(args.data_dir), Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -158,7 +171,7 @@ def main() -> None:
     ref = SimpleNamespace(volumes=t.read_dicom(str(ref_dir), numpy_format=True, crop_region=None))
     registrator = t.ImageRegistrator("elastic", ref.volumes[1])  # 'elastic' is their label for a rigid elastix map
 
-    log_path = out_dir / f"registration_log_{shard}of{n_shards}.csv"
+    log_path = out_dir / (args.log_name or f"registration_log_{shard}of{n_shards}.csv")
     new_log = not log_path.exists()
     done = 0
     with open(log_path, "a", newline="", encoding="utf-8") as handle:
@@ -174,7 +187,8 @@ def main() -> None:
                     "repeat": row["repeat"], "series_uid": row["series_uid"], "out_file": name}
             start = time.time()
             try:
-                result = register_one(data_dir / row["series_dir"], out_file, ref, registrator, t, args.fallback_rule)
+                result = register_one(data_dir / row["series_dir"], out_file, ref, registrator, t, args.fallback_rule,
+                                      forced.get(row["scanner"]))
                 error = ""
             except Exception as exc:  # logged per series; the run goes on
                 result, error = {}, f"{type(exc).__name__}: {exc}"
