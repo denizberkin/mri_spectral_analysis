@@ -107,3 +107,10 @@ python -m eval_pipeline run configs/ldct_baseline.toml --stages training
   set per anatomy under `[data.params.hu_windows]`; compute metrics in the same window.
 - The domain is the dose: low-dose chest, low-dose liver and full dose are three domains
   (`domain_scheme = "dose"`, `num_domains = 3`). `"anatomy_dose"` gives four.
+
+## CT4Harmonization (`ct4h/`)
+
+Low-dose to high-dose translation on TCIA's CT4Harmonization-Multicentric phantom dataset (13 scanners, 5 doses,
+doi:10.7937/M0PB-BH69). Training uses the dataset authors' registration, run over our series index by
+`scripts/run_authors_registration.py`; spectra are computed on the raw DICOM. Details, options and known
+limitations are in `ct4h/README.md`.

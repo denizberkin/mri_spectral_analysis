@@ -7,20 +7,6 @@ from pathlib import Path
 # and the range their PSNR (max 2000) and SSIM (data_range 3000) are defined on. Use it everywhere.
 HU_RANGE = (-1000.0, 2000.0)
 
-# A series whose first slice sits further than this from the scanner reference's first slice has a different
-# table coordinate frame (E2 3 mGy repeats 5-10: DICOM z about 224 mm lower, same phantom position in slice
-# order, correlation 0.9998). Its z is then re-anchored on the reference's first slice before comparing.
-Z_REBASE_MM = 50.0
-
-
-def rebase_z(z, ref_z0: float, max_dev_mm: float = Z_REBASE_MM):
-    """Return (z, shift_mm). If z[0] is more than max_dev_mm from ref_z0, z is moved so that z[0] == ref_z0
-    and shift_mm is what was subtracted; otherwise z is unchanged and shift_mm is 0."""
-    shift = float(z[0] - ref_z0)
-    if abs(shift) > max_dev_mm:
-        return z - shift, shift
-    return z, 0.0
-
 DOSES = [1, 3, 6, 10, 14]          # nominal mGy, from the series description
 RECONS = ["FBP", "IR", "DL"]       # DL exists only on scanners D1 and E2
 SCANNERS = ["A1", "A2", "B1", "B2", "C1", "D1", "E1", "E2", "F1", "G1", "G2", "H1", "H2"]
@@ -57,10 +43,10 @@ def get_domain(scanner: str, dose: int, scheme: str = "dose") -> int:
 
 
 def read_index(path: Path | str) -> list[dict]:
-    """Read ct4h_index.csv (scripts/build_ct4h_index.py) with the numeric columns converted."""
+    """Read ct4h_index.csv (one row per series) with the numeric columns converted."""
     path = Path(path)
     if not path.is_file():
-        raise FileNotFoundError(f"{path} not found. Build it with the CT4H index scripts first.")
+        raise FileNotFoundError(f"{path} not found. It lists every downloaded series (see ct4h/README.md).")
     rows = []
     with open(path, newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
