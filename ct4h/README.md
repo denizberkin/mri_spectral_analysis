@@ -13,6 +13,22 @@ scanned on 13 scanners, 5 doses (1, 3, 6, 10, 14 mGy), 10 repeats; FBP, IR and (
 
 All metrics use `ct4h.data.utils.HU_RANGE = (-1000, 2000)`, the range the authors' code keeps.
 
+## Index
+
+Every tool starts from `ct4h_index.csv`, one row per CT series (scanner, dose_mgy, recon, repeat, series_dir,
+seg_dir for the liver ROI masks, n_slices, pixel_spacing_mm, slice_thickness_mm ...). Two steps build it from the
+TCIA download (they need pydicom and pandas):
+
+```bash
+python scripts/scan_ct4h_headers.py <DICOM root> <ct4h_series_index.csv>     # headers only, one row per series
+python scripts/build_ct4h_index.py  <ct4h_series_index.csv> <ct4h_index.csv>
+```
+
+`<DICOM root>` is the folder that holds `CT4Harmonization-Multicentric/<study>/...` (the same folder is `--data_dir`
+and `CT4H_DIR` later). The index builder stops if a series description does not parse, if the scanner tag disagrees
+with the study, or if a manufacturer is unknown, and it lists series with fewer slices than their scanner's usual
+count.
+
 ## Registered volumes
 
 `scripts/run_authors_registration.py` runs the loop body of the authors' `registered_dataset.py`
@@ -24,7 +40,7 @@ nibabel and a CUDA torch (kept apart from the training env).
 ```bash
 python scripts/run_authors_registration.py --index <ct4h_index.csv> --data_dir <DICOM root> \
     --authors_repo <Harmonization-Dataset clone> --out_dir <authors_registered> \
-    --shard K/N                                # run N shards in parallel; --fallback_rule defaults to like_for_like
+    --shard K/N                                # N shards in parallel (--fallback_rule: see below)
 python scripts/make_ct4h_manifest.py --reg_dir <authors_registered>
 ```
 
@@ -34,12 +50,12 @@ Output: `<scanner>_<dose>mGy_<recon>_rep<NN>.nii.gz` (float32, shape z x y x x =
 Options added on top of the authors' code:
 
 - `--fallback_rule`: their rule drops a good registration (it compares the whole-volume SSIM before with the cropped
-  SSIM after; 140 of 649 scans hit it). The default here, `like_for_like`, compares cropped with cropped (32 hit it;
-  those files hold the unregistered crop and `fallback = 1` in the manifest). A1 was run with `never` so its texture
-  is consistent. Both rules are logged either way.
+  SSIM after; 140 of 649 scans hit it). The default here, `like_for_like`, compares cropped with cropped; 32 scans hit
+  it in the first run, and A1 (the reference's own scanner) was then rerun with `never`. In the final set
+  `fallback = 0` for all 648 volumes, i.e. every file is a registered volume. Both rules are logged either way.
 - `--force_roll SCANNER=SLICES`: their roll search only tries multiples of 4 slices. On noisy low-dose F1 scans it
-  flipped between 4 and 8 (15 of 50 scans got 8), which left a constant 1.28 mm (one native slice) z offset. All 50
-  F1 scans were registered with `--force_roll F1=4`, the value the 35 clean scans chose. The roll is constant per
+  flipped between 4 and 8 (15 of 50 scans got 8), which left a constant 1.28 mm (one native slice) z offset. Those
+  15 were rerun with `--force_roll F1=4`, the value the other 35 chose on their own. The roll is constant per
   scanner for 11 of 13 scanners (A1 0, A2 0, B1 4, B2 0, C1 0, D1 12, E1 8, G1 0, G2 0, H1 0, H2 4).
 
 ## Checked and known
@@ -50,7 +66,8 @@ Options added on top of the authors' code:
 - E2: roll is mixed (20 scans at 0, 30 at 4), and about half of the 6 and 10 mGy scans (and all 14 mGy scans) show a
   y_high band offset of 0.5 to 1.1 mm in z against the A1 reference. Matched pairs differ by <= ~0.75 mm. Accepted
   as a limitation; revisit only if E2 is worse than the other scanners in the per-scanner results.
-- B2 14 mGy repeat 5 failed to register and is missing; its pairs are excluded.
+- B2 14 mGy repeat 5 has no registered volume: its DICOM stack has missing slices (dcmstack: inconsistent slice
+  spacing). Its pairs are excluded. E1 has 49 scans in the dataset, so the set is 648 volumes.
 - The alignment and z-profile diagnostics used to establish this are tagged `ct4h-diagnostics-archive` in git.
 
 ## Layout
@@ -59,6 +76,8 @@ Options added on top of the authors' code:
 |---|---|
 | `ct4h/data/utils.py` | doses, recons, scanners, vendors, `HU_RANGE`, domain ids, index reading |
 | `ct4h/env.py` | `CT4H_DIR`, `CT4H_PREPROCESSED_DIR` from `.env` |
+| `scripts/scan_ct4h_headers.py` | DICOM headers to one row per series |
+| `scripts/build_ct4h_index.py` | header scan to `ct4h_index.csv` |
 | `scripts/run_authors_registration.py` | the authors' registration over our index |
 | `scripts/make_ct4h_manifest.py` | newest log row per series, only for files on disk |
 
