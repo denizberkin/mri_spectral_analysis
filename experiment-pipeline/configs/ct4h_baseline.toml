@@ -32,7 +32,10 @@ directions = "any"            # "any" = all 20 dose pairs, "up" = denoising only
 recons = ["FBP"]              # add "IR", "DL" once they are registered and cached (source and target share one recon)
 domain_scheme = "dose"        # 5 domains: 1, 3, 6, 10, 14 mGy. "scanner_dose" (65) tells the model the scanner
 neighbours = 1                # 2.5D: slices z-1, z+1 as extra input channels (centre slice first). 0 = plain 2D
-hu_window = [-1000.0, 2000.0] # the authors' range; a soft-tissue window is an alternative to try, metrics must match it
+hu_window = [-160.0, 240.0]   # soft-tissue window: ~88% of all voxels fall in it and the main HU peaks agree across scanners, while the
+                              # bright tail (above ~800 HU) differs by hundreds of HU per scanner. Metrics must use the same window.
+                              # [-1000, 2000] is the authors' range, [-200, 600] a compromise that keeps some dense material.
+z_range = [11, 304]           # slices with phantom: the first ~9 and last few are empty or wrapped round by the authors' circular roll
 train_samples = 20000         # random items per epoch (scanner, dose pair, repeats and slice are all drawn)
 validation_samples = 400      # fixed draw on the validation split
 batch_size = 16
