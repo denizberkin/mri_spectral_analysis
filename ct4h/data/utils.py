@@ -66,3 +66,43 @@ def select(rows: list[dict], *, scanners=None, doses=None, recons=None, repeats=
             and (repeats is None or row["repeat"] in repeats)
         )
     return [row for row in rows if keep(row)]
+
+
+# Splits. One phantom means every scan shows the same anatomy, so a random split would put near-identical
+# images (same scanner, different noise realisation) on both sides. Two protocols instead:
+#   scanner: whole scanners are held out (generalisation to an unseen scanner).
+#   repeat:  every scanner is in every split, the 10 repeats are divided (a seen scanner, an unseen noise draw).
+# Proposed defaults, not final. Every vendor stays in train; E2 and F1 (known z-alignment caveats) stay out of test.
+SPLIT_MODES = ("scanner", "repeat")
+SCANNER_SPLIT = {
+    "train": ["A1", "A2", "B2", "G1", "D1", "E2", "F1", "H2", "H1"],
+    "val": ["B1", "E1"],
+    "test": ["G2", "C1"],
+}
+REPEAT_SPLIT = {"train": list(range(1, 8)), "val": [8], "test": [9, 10]}
+DIRECTIONS = ("any", "up", "down")
+
+
+def split_selection(mode: str, split: str) -> tuple[list[str], list[int]]:
+    """(scanners, repeats) of one split. ``scanner`` mode keeps every repeat, ``repeat`` mode every scanner."""
+    if mode not in SPLIT_MODES:
+        raise ValueError(f"split_mode must be one of {SPLIT_MODES}, got {mode!r}")
+    if split not in SCANNER_SPLIT:
+        raise ValueError(f"split must be one of {sorted(SCANNER_SPLIT)}, got {split!r}")
+    if mode == "scanner":
+        return list(SCANNER_SPLIT[split]), list(range(1, 11))
+    return list(SCANNERS), list(REPEAT_SPLIT[split])
+
+
+def dose_pairs(directions: str = "any", doses: list[int] | None = None) -> list[tuple[int, int]]:
+    """(source_dose, target_dose) pairs. ``up`` = towards a higher dose (denoising), ``down`` = towards a lower
+    one (the model has to add noise, which a deterministic regressor cannot do), ``any`` = both."""
+    if directions not in DIRECTIONS:
+        raise ValueError(f"directions must be one of {DIRECTIONS}, got {directions!r}")
+    doses = sorted(doses or DOSES)
+    pairs = [(s, t) for s in doses for t in doses if s != t]
+    if directions == "up":
+        return [(s, t) for s, t in pairs if t > s]
+    if directions == "down":
+        return [(s, t) for s, t in pairs if t < s]
+    return pairs
