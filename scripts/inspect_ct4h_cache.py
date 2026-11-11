@@ -1,20 +1,3 @@
-#!/usr/bin/env python
-"""Look at the cached CT4H data before training anything.
-
-    python scripts/inspect_ct4h_cache.py --cache_dir $CT/cache --out_dir $CT/inspect
-
-Writes into out_dir and prints:
-  1. hu_histogram.png + percentiles: where the phantom lives in HU (decides the HU window).
-  2. z_coverage.png + the slice range that is (almost) all phantom (decides data.params.z_range).
-  3. pairs_grid.png: real source / target slices for a few dose pairs.
-  4. identity_baseline.csv: error of "return the source unchanged" for all 20 dose pairs, against one noisy
-     target repeat and against the repeat mean. A trained model has to beat these numbers.
-  5. same_dose_floor.csv: error between two repeats of the SAME dose (same scanner, same registration). It is the
-     noise-plus-misalignment floor of a single-repeat comparison at that dose.
-  6. z_montage.png: every Nth slice of one 14 mGy volume, to see which z-ranges are anatomy and which are
-     the test-pattern modules.
-Everything is computed from the cache; nothing is written to it.
-"""
 from __future__ import annotations
 
 import argparse
@@ -30,19 +13,13 @@ import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ct4h.data.cached_dataset import CT4HPairDataset, unit_to_hu  # noqa: E402
-from ct4h.data.utils import DOSES, HU_RANGE, SCANNER_SPLIT, dose_pairs, split_selection  # noqa: E402
+from ct4h.data.utils import (  # noqa: E402
+    DOSES, HU_RANGE, SCANNER_SPLIT, SOFT_WINDOW, dose_pairs, read_cache_index, split_selection,
+)
 
 AIR = -900.0          # below this a voxel counts as air
 TISSUE = -500.0       # above this a voxel counts as phantom / body
-SOFT = (-160.0, 240.0)
-
-
-def read_index(cache_dir: Path) -> list[dict]:
-    with open(cache_dir / "cache_index.csv", newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-    for row in rows:
-        row["dose_mgy"], row["repeat"] = int(row["dose_mgy"]), int(row["repeat"])
-    return rows
+SOFT = SOFT_WINDOW
 
 
 def hu_and_coverage(cache_dir: Path, rows: list[dict], out_dir: Path) -> None:
@@ -162,6 +139,11 @@ def same_dose_floor(cache_dir: Path, rows: list[dict], split_mode: str, samples:
     noisy repeat.
     """
     scanners, repeats = split_selection(split_mode, "val")
+    if len(repeats) < 2:
+        print(f"\n== same-dose floor: the val split of the {split_mode!r} mode has one repeat ({repeats}), "
+              "so there is no second repeat of the same dose to compare with. Skipped "
+              "(use --split_mode scanner for this table). ==")
+        return
     z_lo, z_hi = z_range
     rng = np.random.default_rng(7)
     by_key: dict[tuple[str, int], dict[int, str]] = {}
@@ -229,7 +211,7 @@ def main() -> None:
 
     cache_dir, out_dir = Path(args.cache_dir), Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    rows = read_index(cache_dir)
+    rows = read_cache_index(cache_dir)
     print(f"{len(rows)} volumes in the cache; validation scanners ({args.split_mode} split): "
           f"{SCANNER_SPLIT['val'] if args.split_mode == 'scanner' else 'all, repeat 8'}")
     z_range = (args.z_lo, args.z_hi)

@@ -1,9 +1,3 @@
-"""
-Usage:
-    python scripts/build_ldct_index.py
-    python scripts/build_ldct_index.py --data_dir ... --output ... --val_per_anatomy 5 --test_per_anatomy 10
-"""
-
 import argparse
 import os
 import sys

@@ -27,11 +27,6 @@ def get_ct4h_dir() -> str:
     return _get("CT4H_DIR")
 
 
-def get_ct4h_preprocessed_dir() -> str | None:
-    """Where the preprocessing script writes cached slices (and index.csv). None if not set."""
-    return _get("CT4H_PREPROCESSED_DIR", required=False)
-
-
 def get_ct4h_cache_dir() -> str | None:
     """Folder written by scripts/cache_ct4h_volumes.py (int16 .npy volumes + cache_index.csv). None if not set."""
     return _get("CT4H_CACHE_DIR", required=False)

@@ -3,15 +3,13 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Sequence
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .utils import HU_RANGE, dose_pairs, get_domain, split_selection
-
-CACHE_INDEX = "cache_index.csv"
+from .utils import HU_RANGE, dose_pairs, get_domain, read_cache_index, split_selection
 
 
 def window_to_unit(hu: np.ndarray, low: float, high: float) -> np.ndarray:
@@ -113,7 +111,7 @@ class CT4HPairDataset(Dataset):
         split_scanners, split_repeats = split_selection(split_mode, split)
         scanners = list(scanners) if scanners else split_scanners
         repeats = list(repeats) if repeats else split_repeats
-        rows = self._read_cache_index(self.cache_dir)
+        rows = read_cache_index(self.cache_dir)
         wanted_pairs = dose_pairs(directions, list(doses) if doses else None)
         wanted_doses = {d for pair in wanted_pairs for d in pair}
 
@@ -147,23 +145,6 @@ class CT4HPairDataset(Dataset):
                     self.groups.append((scanner, recon, usable))
         if not self.groups:
             raise FileNotFoundError("no scanner has two of the requested doses cached")
-        self.scanners = sorted({g[0] for g in self.groups})
-
-    # -- cache index ---------------------------------------------------------------------------------
-    @staticmethod
-    def _read_cache_index(cache_dir: Path) -> list[dict]:
-        import csv
-
-        path = cache_dir / CACHE_INDEX
-        if not path.is_file():
-            raise FileNotFoundError(f"{path} not found. Run scripts/cache_ct4h_volumes.py first.")
-        rows = []
-        with open(path, newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                for column in ("dose_mgy", "repeat", "n_slices", "height", "width"):
-                    row[column] = int(row[column])
-                rows.append(row)
-        return rows
 
     # -- volumes -------------------------------------------------------------------------------------
     def _volume(self, rel_path: str) -> np.ndarray:
@@ -224,7 +205,7 @@ class CT4HPairDataset(Dataset):
             "z": int(rng.integers(self.z_lo, self.z_hi)),
         }
 
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor | str | int]:
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor | str | int]:
         choice = self.draw(index)
         scanner, recon, z = choice["scanner"], choice["recon"], choice["z"]
 
@@ -239,7 +220,7 @@ class CT4HPairDataset(Dataset):
             target_hu = self._volume(target_files[choice["target_repeat"]])[z]
         target = self._unit(target_hu)[None]
 
-        item: Dict[str, torch.Tensor | str | int] = {
+        item: dict[str, torch.Tensor | str | int] = {
             "source": torch.from_numpy(np.ascontiguousarray(self._pad(source))),
             "target": torch.from_numpy(np.ascontiguousarray(self._pad(target))),
             "source_domain": get_domain(scanner, choice["source_dose"], self.domain_scheme),

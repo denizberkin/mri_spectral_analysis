@@ -1,22 +1,3 @@
-#!/usr/bin/env python
-"""Score a dose-to-dose checkpoint, or the "return the source" baseline, on the CT4H validation/test split.
-
-For every dose pair it compares, against the target-dose image of the same scanner and slice:
-    identity   the source slice itself (what a model has to beat)
-    model      the checkpoint's prediction from the source (needs --checkpoint)
-against two targets:
-    one noisy repeat   what training sees; the floor is the target's own noise
-    repeat mean        the average of every repeat of the target dose in the split (low-noise reference)
-Everything is computed inside --hu_window (clipped to it, data range = window width), which must be the window
-the model was trained with. MAE is in HU, PSNR uses the window width as the peak. Draws are deterministic and
-identical to scripts/inspect_ct4h_cache.py (same seed), so the identity columns match its soft-window columns.
-
-    python scripts/evaluate_ct4h.py --split val                                        # baseline only
-    python scripts/evaluate_ct4h.py --split val --checkpoint experiment-pipeline/runs/ct4h_smoke/artifacts/task3_unet_finetune_2.pt
-    python scripts/evaluate_ct4h.py --split test --split_mode repeat --checkpoint ... --ssim
-Up and down pairs are summarised separately: a deterministic regressor cannot add noise, so the down pairs
-mostly measure how well it removes it. The seen/unseen-scanner comparison is --split_mode repeat vs scanner.
-"""
 from __future__ import annotations
 
 import argparse
@@ -32,7 +13,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "experiment-pipeline"))
 
 from ct4h.data.cached_dataset import CT4HPairDataset  # noqa: E402
-from ct4h.data.utils import DOSES, NUM_DOMAINS, SCANNER_SPLIT, dose_pairs  # noqa: E402
+from ct4h.data.utils import DOSES, NUM_DOMAINS, SCANNER_SPLIT, SOFT_WINDOW, dose_pairs  # noqa: E402
 
 
 # -- metrics (numpy only) ------------------------------------------------------------------------------------
@@ -128,14 +109,14 @@ def main() -> None:
     parser.add_argument("--force_target_dose", type=int, default=None, choices=DOSES,
                         help="give the model this target dose whatever the real target is (tests whether the "
                              "dose conditioning is used: error barely moving means it is not)")
-    parser.add_argument("--hu_window", nargs=2, type=float, default=[-160.0, 240.0], metavar=("LOW", "HIGH"),
-                        help="the window the model was trained with")
+    parser.add_argument("--hu_window", nargs=2, type=float, default=list(SOFT_WINDOW), metavar=("LOW", "HIGH"),
+                        help="the window the model was trained with (default: the soft-tissue window)")
     parser.add_argument("--samples", type=int, default=100, help="slices per dose pair")
     parser.add_argument("--z_lo", type=int, default=11)
     parser.add_argument("--z_hi", type=int, default=304)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--seed", type=int, default=5, help="same default as scripts/inspect_ct4h_cache.py")
-    parser.add_argument("--domain_scheme", default="dose")
+    parser.add_argument("--domain_scheme", default="dose", choices=sorted(NUM_DOMAINS))
     parser.add_argument("--ssim", action="store_true", help="also report SSIM (slower)")
     parser.add_argument("--device", default=None)
     parser.add_argument("--out_dir", default=None, help="default: next to the checkpoint, else the current folder")
@@ -190,7 +171,8 @@ def main() -> None:
                 cache_dir, args.split, args.split_mode, directions=direction, doses=[source_dose, target_dose],
                 recons=args.recons, neighbours=neighbours, hu_window=(low, high), target_mode=mode,
                 domain_scheme=args.domain_scheme, pad_multiple=16, z_range=z_range,
-                include_slice_pos=uses_slice_pos, scanners=args.scanners, repeats=args.repeats, length=args.samples, deterministic=True, seed=args.seed,
+                include_slice_pos=uses_slice_pos, scanners=args.scanners, repeats=args.repeats,
+                length=args.samples, deterministic=True, seed=args.seed,
             )
             results[(source_dose, target_dose, mode)] = evaluate_dataset(
                 dataset, predict, args.batch_size, args.ssim, width)
@@ -262,6 +244,9 @@ def main() -> None:
         + ("_rep" + "-".join(map(str, args.repeats)) if args.repeats else "") \
         + (f"_force{args.force_target_dose}" if args.force_target_dose else "") + (f"_{Path(args.checkpoint).stem}" if args.checkpoint else "_identity")
     for name, rows in (("pairs", pair_rows), ("scanners", scanner_rows)):
+        if not rows:
+            print(f"no {name} rows to write")
+            continue
         path = out_dir / f"ct4h_eval_{name}_{tag}.csv"
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(rows[0]))

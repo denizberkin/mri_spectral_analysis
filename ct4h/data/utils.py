@@ -4,8 +4,16 @@ import csv
 from pathlib import Path
 
 # HU range kept by the dataset authors' code (Harmonization-Dataset utils.read_dicom: level 500, window 3000),
-# and the range their PSNR (max 2000) and SSIM (data_range 3000) are defined on. Use it everywhere.
+# and the range their PSNR (max 2000) and SSIM (data_range 3000) are defined on. The cache stores this range.
 HU_RANGE = (-1000.0, 2000.0)
+
+# Soft-tissue window: what the models are trained on and what every reported metric is computed in.
+# ~88% of all voxels fall inside it, and the main HU peaks agree across scanners, while the bright tail
+# (above ~800 HU) differs by hundreds of HU per scanner. Keep it in step with data.params.hu_window.
+SOFT_WINDOW = (-160.0, 240.0)
+
+CACHE_INDEX = "cache_index.csv"      # written by scripts/cache_ct4h_volumes.py
+CACHE_INDEX_NUMERIC = ("dose_mgy", "repeat", "n_slices", "height", "width")
 
 DOSES = [1, 3, 6, 10, 14]          # nominal mGy, from the series description
 RECONS = ["FBP", "IR", "DL"]       # DL exists only on scanners D1 and E2
@@ -25,7 +33,6 @@ INDEX_NUMERIC = {
 # Domain schemes for the conditional UNet's source/target embeddings.
 #   dose:          one domain per dose level (5). The scanner is not told to the model.
 #   scanner_dose:  one domain per (scanner, dose) (65); the model knows which scanner it is looking at.
-DOMAIN_SCHEMES = ("dose", "scanner_dose")
 NUM_DOMAINS = {"dose": len(DOSES), "scanner_dose": len(SCANNERS) * len(DOSES)}
 
 
@@ -52,6 +59,24 @@ def read_index(path: Path | str) -> list[dict]:
         for row in csv.DictReader(handle):
             for column, kind in INDEX_NUMERIC.items():
                 row[column] = kind(row[column])
+            rows.append(row)
+    return rows
+
+
+def read_cache_index(cache_dir: Path | str) -> list[dict]:
+    """Read cache_index.csv (one row per cached volume) with the numeric columns converted.
+
+    The single reader of the cache index: CT4HPairDataset, the inspection script and the figure script all
+    use it, so a column added by scripts/cache_ct4h_volumes.py only has to be handled here.
+    """
+    path = Path(cache_dir) / CACHE_INDEX
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} not found. Run scripts/cache_ct4h_volumes.py first.")
+    rows = []
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            for column in CACHE_INDEX_NUMERIC:
+                row[column] = int(row[column])
             rows.append(row)
     return rows
 

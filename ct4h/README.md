@@ -11,7 +11,13 @@ scanned on 13 scanners, 5 doses (1, 3, 6, 10, 14 mGy), 10 repeats; FBP, IR and (
 | training / paired evaluation | the dataset authors' registered volumes (below) |
 | NPS, power spectra, error spectra | raw DICOM pixels (unclipped HU, no interpolation). Their z resampling and B-spline interpolation low-pass the noise, so spectra of the registered volumes are not the scanner's. Measuring that change is a result in itself. |
 
-All metrics use `ct4h.data.utils.HU_RANGE = (-1000, 2000)`, the range the authors' code keeps.
+Two HU ranges, and they are not interchangeable:
+
+- `HU_RANGE = (-1000, 2000)` is the range the authors' code keeps, and the range the cache stores.
+- `SOFT_WINDOW = (-160, 240)` is the soft-tissue window the models are trained on and **every reported metric
+  is computed in** (`data.params.hu_window`, `--hu_window`). About 88% of all voxels fall inside it; the bright
+  tail above ~800 HU differs by hundreds of HU between scanners, so including it would mostly measure the
+  scanner. A number is only comparable with another number computed in the same window.
 
 ## Index
 
@@ -78,15 +84,50 @@ Options added on top of the authors' code:
   spacing). Its pairs are excluded. E1 has 49 scans in the dataset, so the set is 648 volumes.
 - The alignment and z-profile diagnostics used to establish this are tagged `ct4h-diagnostics-archive` in git.
 
+## Cache, training, evaluation
+
+The registered `.nii.gz` volumes are too slow to train from (a whole volume has to be decompressed for one
+slice), so they are cached as one memory-mapped int16 `.npy` per volume plus `cache_index.csv`:
+
+```bash
+python scripts/cache_ct4h_volumes.py --reg_dir <authors_registered> --out_dir <cache> --recons FBP
+python scripts/inspect_ct4h_cache.py --cache_dir <cache> --out_dir <cache>/../inspect   # figures + baselines
+```
+
+`CT4H_CACHE_DIR` in `.env` (or `--cache_dir` / `data.params.cache_dir`) points at the cache from then on.
+`inspect_ct4h_cache.py` writes the numbers the slides and the configs rest on: the HU histogram that picks the
+window, the per-slice tissue fraction that picks `z_range`, `identity_baseline.csv` ("return the source
+unchanged", the error a model has to beat) and `same_dose_floor.csv` (the error between two repeats of the same
+dose, i.e. the noise floor of a single-repeat comparison).
+
+```bash
+cd experiment-pipeline && python -m eval_pipeline run configs/ct4h_up_scanner.toml --stages training
+python scripts/evaluate_ct4h.py --checkpoint <run>/artifacts/task3_unet_finetune_<epoch>.pt --split val
+python scripts/make_ct4h_figures.py --cache_dir <cache> --out_dir <figures> --checkpoint ... --pairs_csv ...
+```
+
+`ct4h_baseline.toml` is the template; `ct4h_up_scanner`, `ct4h_any_scanner` and `ct4h_up_repeat` differ from it
+only in name, `split_mode` and `directions`. Training draws random items (scanner, dose pair, both repeats and
+slice) and its target is **one noisy repeat**; validation and evaluation use a fixed draw and the **mean of the
+split's repeats** as the low-noise target. The test scanners (G2, C1) and test repeats (9, 10) are untouched.
+
 ## Layout
 
 | path | what |
 |---|---|
-| `ct4h/data/utils.py` | doses, recons, scanners, vendors, `HU_RANGE`, domain ids, index reading |
-| `ct4h/env.py` | `CT4H_DIR`, `CT4H_PREPROCESSED_DIR` from `.env` |
+| `ct4h/data/utils.py` | doses, recons, scanners, vendors, `HU_RANGE`, `SOFT_WINDOW`, splits, dose pairs, domain ids, index reading |
+| `ct4h/data/cached_dataset.py` | `CT4HPairDataset`: one item = a dose pair of one scanner, slice and repeats |
+| `ct4h/env.py` | `CT4H_DIR`, `CT4H_CACHE_DIR` from `.env` |
 | `scripts/scan_ct4h_headers.py` | DICOM headers to one row per series |
 | `scripts/build_ct4h_index.py` | header scan to `ct4h_index.csv` |
 | `scripts/run_authors_registration.py` | the authors' registration over our index |
 | `scripts/make_ct4h_manifest.py` | newest log row per series, only for files on disk |
+| `scripts/cache_ct4h_volumes.py` | registered NIfTI to the int16 `.npy` cache |
+| `scripts/inspect_ct4h_cache.py` | HU window, z range, identity baseline, same-dose noise floor |
+| `scripts/evaluate_ct4h.py` | score a checkpoint (or the identity baseline) per dose pair and scanner |
+| `scripts/make_ct4h_figures.py` | the dataset-factor and result figures for slides and reports |
+| `experiment-pipeline/components/data/ct4h.py` | `ct4h_paired` data module (loaders, crop and flip) |
+| `experiment-pipeline/configs/ct4h_*.toml` | the training runs |
+| `tests/smoke_ct4h_dataset.py` | dataset checks on fake volumes, no real data needed |
 
 Cite the dataset (doi:10.7937/M0PB-BH69) and the authors' paper (arXiv 2507.01539) in any publication.

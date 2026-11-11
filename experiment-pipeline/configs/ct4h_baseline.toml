@@ -1,5 +1,7 @@
+# Template the ct4h_*.toml run configs are generated from: copy it and change the experiment/run name,
+# data.params.split_mode and data.params.directions. Keep every other key in step across the run configs.
 [experiment]
-name = "ct4h_any2any_scanner_split"   # dose-conditioned any-to-any translation, trained from scratch (no CT pretraining
+name = "ct4h_baseline"                # dose-conditioned any-to-any translation, trained from scratch (no CT pretraining
                                       # exists, and the MRI checkpoints live in another intensity domain).
                                       # Held-out scanners: data.params.split_mode = "scanner". For the seen-scanner
                                       # comparison set split_mode = "repeat" and change the experiment name.
@@ -12,7 +14,7 @@ name = "mlflow"
 
 [tracking.params]
 experiment_name = "ct4h-conditional-unet"
-run_name = "ct4h_any2any_scanner_split"
+run_name = "ct4h_baseline"
 tracking_uri = "sqlite:///mlflow.db"
 
 [registry]
@@ -38,6 +40,7 @@ hu_window = [-160.0, 240.0]   # soft-tissue window: ~88% of all voxels fall in i
 z_range = [11, 304]           # slices with phantom: the first ~9 and last few are empty or wrapped round by the authors' circular roll
 train_samples = 20000         # random items per epoch (scanner, dose pair, repeats and slice are all drawn)
 validation_samples = 400      # fixed draw on the validation split
+validation_target = "mean"    # validate against the mean of the split's repeats (low noise), not one noisy repeat; "repeat" = what training sees
 batch_size = 16
 num_workers = 8
 seed = 1

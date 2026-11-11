@@ -1,24 +1,3 @@
-#!/usr/bin/env python
-"""Figures of the CT4H data and of a trained model, for slides and reports.
-
-    python scripts/make_ct4h_figures.py --cache_dir $CT/cache --out_dir $CT/figures
-    python scripts/make_ct4h_figures.py ... --only dose scanner repeat recon
-    python scripts/make_ct4h_figures.py ... --only model results \
-        --checkpoint experiment-pipeline/runs/ct4h_up_scanner/artifacts/task3_unet_finetune_28.pt \
-        --pairs_csv experiment-pipeline/runs/ct4h_up_scanner/artifacts/ct4h_eval_pairs_val_scanner_task3_unet_finetune_28.csv
-
-Figures (one PNG each, in --out_dir):
-  factors_dose.png     one scanner and slice at 1, 3, 6, 10, 14 mGy (top: whole slice, bottom: zoom)
-  factors_scanner.png  the same slice on all 13 scanners at 10 mGy
-  factors_repeat.png   repeats of one scan (noise realisations), their mean, and differences (no edges = aligned)
-  factors_recon.png    FBP / IR / DL on the scanners that have DL (needs IR and DL in the cache, else skipped)
-  model_examples.png   source / model / target (repeat mean) / errors for a few validation pairs (needs --checkpoint)
-  results_pairs.png    identity vs model error per dose pair from the evaluation CSV (needs --pairs_csv)
-  noise_vs_dose.png    noise of one image vs dose, from same_dose_floor.csv written by inspect_ct4h_cache.py (needs --floor_csv)
-  identity_heatmap.png "return the source" error per dose pair, from identity_baseline.csv (needs --identity_csv)
-All images use the soft-tissue window -160..240 HU. The model figure runs on the CPU (a handful of slices) unless
-you pass --device. Nothing is written to the cache.
-"""
 from __future__ import annotations
 
 import argparse
@@ -34,9 +13,9 @@ import numpy as np  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ct4h.data.utils import DOSES, SCANNERS, VENDORS  # noqa: E402
+from ct4h.data.utils import DOSES, SCANNERS, SOFT_WINDOW, VENDORS, read_cache_index  # noqa: E402
 
-SOFT = (-160.0, 240.0)
+SOFT = SOFT_WINDOW
 FIGURES = ["dose", "scanner", "repeat", "recon", "model", "results", "noise", "identity"]
 
 
@@ -45,9 +24,8 @@ class Cache:
 
     def __init__(self, cache_dir: Path):
         self.dir = cache_dir
-        with open(cache_dir / "cache_index.csv", newline="", encoding="utf-8") as handle:
-            self.rows = list(csv.DictReader(handle))
-        self.paths = {(r["scanner"], r["recon"], int(r["dose_mgy"]), int(r["repeat"])): r["path"] for r in self.rows}
+        self.rows = read_cache_index(cache_dir)
+        self.paths = {(r["scanner"], r["recon"], r["dose_mgy"], r["repeat"]): r["path"] for r in self.rows}
 
     def has(self, scanner: str, recon: str, dose: int, repeat: int = 1) -> bool:
         return (scanner, recon, dose, repeat) in self.paths
