@@ -63,6 +63,8 @@ class CT4HPairDataset(Dataset):
         pad_multiple: pad height and width up to a multiple of this with air (-1) so a UNet with ``levels``
             down-samplings accepts whole slices. ``orig_height`` / ``orig_width`` give the crop back.
         z_range: (first, last+1) slice indices to draw the centre slice from; default the whole volume.
+        scanners / repeats: override the split's scanners / repeats (e.g. to score a seen-scanner and an unseen-scanner
+            model on exactly the same scans). The split still decides everything else.
         include_slice_pos: also return the normalised axial position (only for a model with slice_conditioning).
     """
 
@@ -80,6 +82,8 @@ class CT4HPairDataset(Dataset):
         domain_scheme: str = "dose",
         pad_multiple: int = 16,
         z_range: Sequence[int] | None = None,
+        scanners: Sequence[str] | None = None,
+        repeats: Sequence[int] | None = None,
         include_slice_pos: bool = False,
         length: int = 10000,
         deterministic: bool = False,
@@ -106,7 +110,9 @@ class CT4HPairDataset(Dataset):
         self._generator: np.random.Generator | None = None
         self._generator_pid = -1
 
-        scanners, repeats = split_selection(split_mode, split)
+        split_scanners, split_repeats = split_selection(split_mode, split)
+        scanners = list(scanners) if scanners else split_scanners
+        repeats = list(repeats) if repeats else split_repeats
         rows = self._read_cache_index(self.cache_dir)
         wanted_pairs = dose_pairs(directions, list(doses) if doses else None)
         wanted_doses = {d for pair in wanted_pairs for d in pair}

@@ -32,7 +32,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "experiment-pipeline"))
 
 from ct4h.data.cached_dataset import CT4HPairDataset  # noqa: E402
-from ct4h.data.utils import NUM_DOMAINS, SCANNER_SPLIT, dose_pairs  # noqa: E402
+from ct4h.data.utils import DOSES, NUM_DOMAINS, SCANNER_SPLIT, dose_pairs  # noqa: E402
 
 
 # -- metrics (numpy only) ------------------------------------------------------------------------------------
@@ -93,12 +93,14 @@ def load_model(path: str, device):
     return model, any(k.startswith("slice_embedding.") for k in state)
 
 
-def make_predict(model, uses_slice_pos: bool, device):
+def make_predict(model, uses_slice_pos: bool, device, force_target_dose: int | None = None):
     import torch
 
     def predict(batch: dict) -> np.ndarray:
         source = torch.from_numpy(np.stack(batch["source"])).to(device)
         target_domain = torch.as_tensor(batch["target_domain"], dtype=torch.long, device=device)
+        if force_target_dose is not None:
+            target_domain = torch.full_like(target_domain, DOSES.index(force_target_dose))
         source_domain = torch.as_tensor(batch["source_domain"], dtype=torch.long, device=device)
         slice_pos = torch.as_tensor(np.stack(batch["slice_pos"]), dtype=torch.float32, device=device) if uses_slice_pos else None
         with torch.no_grad():
@@ -121,6 +123,11 @@ def main() -> None:
     parser.add_argument("--split_mode", default="scanner", choices=["scanner", "repeat"])
     parser.add_argument("--directions", default="any", choices=["any", "up", "down"])
     parser.add_argument("--recons", nargs="+", default=["FBP"])
+    parser.add_argument("--scanners", nargs="+", default=None, help="override the split's scanners, e.g. G2 C1")
+    parser.add_argument("--repeats", nargs="+", type=int, default=None, help="override the split's repeats, e.g. 9 10")
+    parser.add_argument("--force_target_dose", type=int, default=None, choices=DOSES,
+                        help="give the model this target dose whatever the real target is (tests whether the "
+                             "dose conditioning is used: error barely moving means it is not)")
     parser.add_argument("--hu_window", nargs=2, type=float, default=[-160.0, 240.0], metavar=("LOW", "HIGH"),
                         help="the window the model was trained with")
     parser.add_argument("--samples", type=int, default=100, help="slices per dose pair")
@@ -156,7 +163,9 @@ def main() -> None:
         if domains != NUM_DOMAINS[args.domain_scheme]:
             sys.exit(f"checkpoint has {domains} domains, domain_scheme {args.domain_scheme!r} needs "
                      f"{NUM_DOMAINS[args.domain_scheme]}")
-        predict = make_predict(model, uses_slice_pos, device)
+        if args.force_target_dose is not None and args.domain_scheme != "dose":
+            sys.exit("--force_target_dose needs domain_scheme dose")
+        predict = make_predict(model, uses_slice_pos, device, args.force_target_dose)
         print(f"checkpoint {args.checkpoint}: {channels} input channels (neighbours={neighbours}), {domains} domains")
     else:
         uses_slice_pos = False
@@ -166,7 +175,11 @@ def main() -> None:
     width = high - low
     z_range = (args.z_lo, args.z_hi)
     scanners = SCANNER_SPLIT[args.split] if args.split_mode == "scanner" else "all scanners"
-    print(f"split={args.split} ({args.split_mode}: {scanners}), window {low:.0f}..{high:.0f} HU, "
+    if args.scanners:
+        scanners = args.scanners
+    repeats = f", repeats {args.repeats}" if args.repeats else ""
+    forced = f", model always told target {args.force_target_dose} mGy" if args.force_target_dose else ""
+    print(f"split={args.split} ({args.split_mode}: {scanners}{repeats}){forced}, window {low:.0f}..{high:.0f} HU, "
           f"{args.samples} slices per dose pair, z {z_range[0]}..{z_range[1]}")
 
     results: dict[tuple, list[dict]] = {}          # (source, target, mode) -> records
@@ -177,7 +190,7 @@ def main() -> None:
                 cache_dir, args.split, args.split_mode, directions=direction, doses=[source_dose, target_dose],
                 recons=args.recons, neighbours=neighbours, hu_window=(low, high), target_mode=mode,
                 domain_scheme=args.domain_scheme, pad_multiple=16, z_range=z_range,
-                include_slice_pos=uses_slice_pos, length=args.samples, deterministic=True, seed=args.seed,
+                include_slice_pos=uses_slice_pos, scanners=args.scanners, repeats=args.repeats, length=args.samples, deterministic=True, seed=args.seed,
             )
             results[(source_dose, target_dose, mode)] = evaluate_dataset(
                 dataset, predict, args.batch_size, args.ssim, width)
@@ -186,8 +199,9 @@ def main() -> None:
     metrics = ["mae", "psnr"] + (["ssim"] if args.ssim else [])
     pair_rows, summary = [], defaultdict(list)
     header = f"{'pair':>8s} {'dir':>5s} | " + " | ".join(
-        f"{'vs ' + m:>7s} {'identity':>8s}" + (f" {'model':>8s} {'gain%':>7s}" if has_model else "") for m in ("repeat", "mean"))
-    print("\n" + header + "\n" + "-" * len(header))
+        f"{'vs ' + m:>9s} {'identity':>8s}" + (f" {'model':>8s} {'gain%':>7s}" if has_model else "") for m in ("repeat", "mean"))
+    print("\nMAE in HU inside the window; gain% = how much of the identity error the model removes")
+    print(header + "\n" + "-" * len(header))
     for source_dose, target_dose in dose_pairs(args.directions):
         direction = "up" if target_dose > source_dose else "down"
         cells, row = [], {"source_mgy": source_dose, "target_mgy": target_dose, "direction": direction}
@@ -195,7 +209,7 @@ def main() -> None:
             records = results[(source_dose, target_dose, mode)]
             ident = mean_of(records, "identity_mae")
             row[f"{mode}_identity_mae"] = ident
-            cell = f"{'MAE':>7s} {ident:8.2f}"
+            cell = f"{'':>9s} {ident:8.2f}"
             summary[(direction, mode, "identity")].append(ident)
             if has_model:
                 model_mae = mean_of(records, "model_mae")
@@ -244,7 +258,9 @@ def main() -> None:
 
     out_dir = Path(args.out_dir) if args.out_dir else (Path(args.checkpoint).parent if args.checkpoint else Path.cwd())
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{args.split}_{args.split_mode}" + (f"_{Path(args.checkpoint).stem}" if args.checkpoint else "_identity")
+    tag = f"{args.split}_{args.split_mode}" + ("_" + "".join(args.scanners) if args.scanners else "") \
+        + ("_rep" + "-".join(map(str, args.repeats)) if args.repeats else "") \
+        + (f"_force{args.force_target_dose}" if args.force_target_dose else "") + (f"_{Path(args.checkpoint).stem}" if args.checkpoint else "_identity")
     for name, rows in (("pairs", pair_rows), ("scanners", scanner_rows)):
         path = out_dir / f"ct4h_eval_{name}_{tag}.csv"
         with open(path, "w", newline="", encoding="utf-8") as handle:
