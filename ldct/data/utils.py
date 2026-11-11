@@ -6,12 +6,10 @@ import re
 from pathlib import Path
 
 ANATOMIES = ["chest", "liver"]
-DOSES = ["low", "full"]
 
 PATIENT_PREFIX = {"C": "chest", "L": "liver"}
 PATIENT_RE = re.compile(r"^[CL]\d{3}$")
 
-SPLITS = ["train", "val", "test"]
 UNPAIRED = "unpaired"  # full-dose only (GE): no low-dose partner, never used for paired training
 
 DOMAIN_SCHEMES = {

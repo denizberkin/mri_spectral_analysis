@@ -26,12 +26,19 @@ Code for team **inzva mri**'s MRIxFields 2026 Task 3 entry (cross-field brain MR
 | `scripts/make_task3_submission.py` | inference: validation-phase submission ZIP, optional 4-flip TTA |
 | `scripts/spectral_analysis.py`, `scripts/spectral_figures.py` | dataset spectra, power-law exponents, figures |
 | `scripts/error_spectrum_analysis.py` | error spectrum and 1 - SSIM by edge strength and region for the final model |
+| `ldct/`, `scripts/*_ldct*.py` | low-dose to full-dose CT (Mayo), see below |
+| `ct4h/`, `scripts/*ct4h*.py` | dose-to-dose CT on the CT4Harmonization phantom, see `ct4h/README.md` |
+
+The three tasks share one model, trainer and loss set (`experiment-pipeline/components/`); only the data
+code and the configs differ.
 
 ## Setup
 
 - Python 3.13, an NVIDIA GPU.
 - `pip install -r requirements.txt` (install `torch` from the CUDA index that matches your driver).
-- `cp .env.example .env` and set `DATA_DIR`, `PREPROCESSED_DIR`, `SUBMISSION_DIR`.
+- `cp .env.example .env` and set `DATA_DIR`, `PREPROCESSED_DIR`, `SUBMISSION_DIR` for the MRI task,
+  `LDCT_DIR` and `LDCT_PREPROCESSED_DIR` for the Mayo CT task, `CT4H_DIR` and `CT4H_CACHE_DIR` for the
+  phantom CT task. Only the variables of the task you run have to be set.
 
 ## Training the final model
 
@@ -97,9 +104,17 @@ Workflow, from the repo root with both variables set:
 ```bash
 python scripts/build_ldct_index.py     # series -> index.csv, with a patient-level train/val/test split
 python scripts/preprocess_ldct.py      # DICOM -> per-slice npz holding raw HU
+python scripts/check_ldct_pairs.py     # optional: are the low/full slices really the same slice?
 cd experiment-pipeline
-python -m eval_pipeline run configs/ldct_baseline.toml --stages training
+python -m eval_pipeline run configs/ldct_chest_baseline.toml --stages training
+cd ..
+python scripts/evaluate_ldct.py --anatomy chest --split val \
+    --checkpoint experiment-pipeline/runs/ldct_chest_baseline/artifacts/task3_unet_finetune_30.pt
 ```
+
+`ldct_liver_baseline.toml` is the liver run; `ldct_{chest,liver}_fullrange.toml` are the window ablation.
+`evaluate_ldct.py` with no `--checkpoint` scores the "do nothing" baseline the model has to beat, and
+scores only chest slices that contain lung unless `--all_slices` is given.
 
 - Only the Siemens patients have both doses, so only they are used for paired training.
   The split is by patient (default 5 val and 10 test per anatomy, `--seed` fixes it).

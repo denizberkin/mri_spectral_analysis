@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -9,13 +9,13 @@ from torch.utils.data import Dataset
 
 from .utils import parse_slice_name
 
-# Soft-tissue-oriented windows, one per anatomy (HU). The chest window keeps lung and
-# mediastinum; the liver window is the usual abdominal one. They decide where the noise is
-# visible, so the metrics must be computed in the same window.
-
-# WHICH ONE!!! CHECK THIS LATER
+# One window per anatomy (HU), and what every run so far was trained and scored in. The chest window is
+# wide because the 10% dose chest task is about lung and mediastinum, where a soft-tissue window would clip
+# most of the noise away; the liver window is the usual abdominal one. The window decides where the noise is
+# visible, so a number is only comparable with another computed in the same window. Override per run under
+# [data.params.hu_windows] (configs/ldct_*_fullrange.toml do) and pass --hu_window to scripts/evaluate_ldct.py.
 DEFAULT_HU_WINDOWS = {"chest": (-1000.0, 400.0), "liver": (-160.0, 240.0)}
-#DEFAULT_HU_WINDOWS = {"chest": (-160.0, 240.0), "liver": (-160.0, 240.0)}
+
 
 def window_to_unit(hu: np.ndarray, low: float, high: float) -> np.ndarray:
     """Clip HU to [low, high] and rescale to [0, 1] (float32)."""
@@ -84,12 +84,12 @@ class CachedLDCTDataset(Dataset):
             slice_pos = float(npz["slice_pos"])
         return torch.from_numpy(unit).unsqueeze(0) * 2.0 - 1.0, slice_pos
 
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor | str | int]:
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor | str | int]:
         source_path, target_path = self.pairs[index]
         source, slice_pos = self._load(source_path)
         target, _ = self._load(target_path)
         patient, slice_idx = parse_slice_name(source_path)
-        item: Dict[str, torch.Tensor | str | int] = {
+        item: dict[str, torch.Tensor | str | int] = {
             "source": source,
             "target": target,
             "patient_id": patient,

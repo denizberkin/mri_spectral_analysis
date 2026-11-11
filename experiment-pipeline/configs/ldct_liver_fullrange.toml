@@ -36,7 +36,8 @@ horizontal_flip = 0.5
 include_slice_pos = false     # patient coverage in z differs, so the normalised position is only a rough hint
 validation_samples = 400      # whole slices, thinned evenly; 0 keeps the full validation fold
 # Full-range ablation: the whole 12-bit CT scale instead of a task window. Same data, same split; only the
-# window changes, so compare against ldct_liver_baseline. Metrics must use this same window (evaluate_ldct.py --config).
+# window changes, so compare against ldct_liver_baseline. Score it in this same window:
+# python scripts/evaluate_ldct.py --anatomy liver --split val --hu_window -1024 3071 --checkpoint ...
 [data.params.hu_windows]
 chest = [-1024.0, 3071.0]
 liver = [-1024.0, 3071.0]

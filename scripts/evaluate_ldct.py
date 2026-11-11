@@ -1,24 +1,3 @@
-"""Score a checkpoint, or the "do nothing" baseline, on the paired LDCT slices.
-
-For every patient of a split it compares, against the full-dose slice:
-    input   the low-dose slice itself (what a model has to beat)
-    model   the checkpoint's prediction from the low-dose slice
-and reports RMSE and MAE in HU, PSNR and SSIM. Everything is computed inside the HU window
-used for training (clipped to it, data range = window width), so numbers are only
-comparable between runs that use the same window. Slices are averaged per patient first,
-and the summary is over patients.
-
-For chest, only slices that contain lung are scored by default, as lung is what the 10%
-dose chest task is about (a slice counts when at least --lung_fraction of its full-dose
-pixels lie between -950 and -600 HU). Use --all_slices to score everything.
-
-Usage:
-    python scripts/evaluate_ldct.py --anatomy chest --split val                 # do-nothing baseline
-    python scripts/evaluate_ldct.py --anatomy chest --split val \
-        --checkpoint experiment-pipeline/runs/ldct_chest_baseline/artifacts/task3_unet_finetune_30.pt
-    python scripts/evaluate_ldct.py --anatomy liver --split test --checkpoint ... --examples 3 --stride 1
-"""
-
 import argparse
 import csv
 import sys
@@ -31,7 +10,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "experiment-pipeline"))
 
-from ldct.data.cached_dataset import DEFAULT_HU_WINDOWS, unit_to_hu, window_to_unit
+from ldct.data.cached_dataset import DEFAULT_HU_WINDOWS, window_to_unit
 from ldct.data.utils import ANATOMIES, NUM_DOMAINS, get_domain, patients_in, read_index
 from ldct.env import get_ldct_preprocessed_dir
 
@@ -179,6 +158,10 @@ def main() -> None:
             save_example(out_dir / "eval" / "examples" / f"{tag}_{names[mid]}.png", low[mid], pred[mid], full[mid],
                          window, f"{args.anatomy} {names[mid]} ({tag})")
 
+    if not rows:
+        sys.exit(f"No {args.anatomy} {args.split} slices were scored"
+                 + (f" (every patient was dropped by the lung filter; try --all_slices or a lower "
+                    f"--lung_fraction than {args.lung_fraction})" if lung_only else ""))
     scored = sum(r["n_slices"] for r in rows)
     print(f"\n{args.anatomy} {args.split}: {len(rows)} patients, {scored} slices"
           f"{' (slices with lung only)' if lung_only else ''}, window {window}, tag {tag}")
