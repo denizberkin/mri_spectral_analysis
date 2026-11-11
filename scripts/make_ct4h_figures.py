@@ -127,16 +127,34 @@ def fig_repeat(cache: Cache, out: Path, scanner: str, z: int) -> None:
     plt.close(fig)
 
 
-def fig_recon(cache: Cache, out: Path, z: int, dose: int) -> None:
-    scanners = [s for s in SCANNERS if cache.has(s, "DL", dose) and cache.has(s, "FBP", dose) and cache.has(s, "IR", dose)]
+def registered_slice(reg_dir: Path, scanner: str, recon: str, dose: int, repeat: int, z: int) -> np.ndarray | None:
+    """One slice straight from a registered NIfTI (same orientation as the cache: nibabel (x, y, z) -> (z, y, x)).
+    Lets the reconstruction figure be made without caching IR and DL (about 42 GB for IR alone)."""
+    import nibabel as nib
+
+    path = reg_dir / f"{scanner}_{dose}mGy_{recon}_rep{repeat:02d}.nii.gz"
+    if not path.is_file():
+        return None
+    volume = np.asanyarray(nib.load(str(path)).dataobj)
+    return np.asarray(np.transpose(volume, (2, 1, 0))[z], dtype=np.float32)
+
+
+def fig_recon(cache: Cache, out: Path, z: int, dose: int, reg_dir: Path | None = None) -> None:
+    def get(scanner: str, recon: str):
+        if reg_dir is not None:
+            return registered_slice(reg_dir, scanner, recon, dose, 1, z)
+        return cache.slice(scanner, recon, dose, 1, z) if cache.has(scanner, recon, dose) else None
+
+    images = {s: [get(s, r) for r in ("FBP", "IR", "DL")] for s in SCANNERS}
+    scanners = [s for s, row in images.items() if all(img is not None for img in row)]
     if not scanners:
-        print(f"factors_recon: no scanner has FBP, IR and DL at {dose} mGy in the cache; run "
-              "scripts/cache_ct4h_volumes.py --recons FBP IR DL first. Skipped.")
+        print(f"factors_recon: no scanner has FBP, IR and DL at {dose} mGy repeat 1 "
+              f"({'in ' + str(reg_dir) if reg_dir else 'in the cache; pass --reg_dir to read the registered NIfTI files instead'}). Skipped.")
         return
     fig, axes = plt.subplots(len(scanners), 3, figsize=(9.5, 2.9 * len(scanners)), squeeze=False)
     for row, scanner in enumerate(scanners):
         for column, recon in enumerate(("FBP", "IR", "DL")):
-            show(axes[row, column], cache.slice(scanner, recon, dose, 1, z), f"{scanner} {recon}")
+            show(axes[row, column], images[scanner][column], f"{scanner} {recon}")
     fig.suptitle(f"Reconstruction of the same scan, {dose} mGy, slice {z}", fontsize=10)
     fig.tight_layout()
     fig.savefig(out / "factors_recon.png", dpi=140)
@@ -268,6 +286,8 @@ def main() -> None:
     parser.add_argument("--z", type=int, default=126, help="slice index (126 shows the liver with lesions)")
     parser.add_argument("--zoom", type=int, default=120, help="pixels of the zoom crop in the dose figure")
     parser.add_argument("--recon_dose", type=int, default=6)
+    parser.add_argument("--reg_dir", default=None, help="registered NIfTI folder: the reconstruction figure reads it directly "
+                        "(no need to cache IR and DL)")
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--pairs_csv", default=None)
     parser.add_argument("--floor_csv", default=None, help="same_dose_floor.csv from inspect_ct4h_cache.py")
@@ -293,7 +313,7 @@ def main() -> None:
         elif name == "repeat":
             fig_repeat(cache, out, args.scanner, args.z)
         elif name == "recon":
-            fig_recon(cache, out, args.z, args.recon_dose)
+            fig_recon(cache, out, args.z, args.recon_dose, Path(args.reg_dir) if args.reg_dir else None)
         elif name == "model":
             if not args.checkpoint:
                 sys.exit("model figure needs --checkpoint")
