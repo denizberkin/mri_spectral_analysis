@@ -9,6 +9,8 @@ from eval_pipeline.core.config import load_experiment_config
 from eval_pipeline.core.registry import validate_component_imports
 
 RUN_STAGES = ("training", "validation", "test")
+SET_HELP = ("Override an existing config key, repeatable, e.g. --set experiment.seed=2 "
+            "--set experiment.name=\"run_a\". The value is a TOML literal; strings need quotes.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,6 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser("validate", help="Validate and resolve a single experiment config.")
     validate.add_argument("config", type=Path, help="Path to a TOML or JSON experiment config.")
+    validate.add_argument("--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE",
+                          help=SET_HELP)
     validate.add_argument(
         "--check-imports",
         action="store_true",
@@ -25,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="Run configured experiment stages.")
     run.add_argument("config", type=Path, help="Path to a TOML or JSON experiment config.")
+    run.add_argument("--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE", help=SET_HELP)
     run.add_argument(
         "--stages",
         nargs="+",
@@ -41,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # validate config and imports
     if args.command == "validate":
-        config = load_experiment_config(args.config)
+        config = load_experiment_config(args.config, overrides=args.overrides)
         _add_default_import_roots(config)
         if args.check_imports:
             _check_imports(config)
@@ -49,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "run":
-        config = load_experiment_config(args.config)
+        config = load_experiment_config(args.config, overrides=args.overrides)
         _add_default_import_roots(config)
         stages = args.stages or ["test"]
         result = _run_stages(config, stages)

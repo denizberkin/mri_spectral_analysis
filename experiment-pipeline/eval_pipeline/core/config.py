@@ -224,9 +224,37 @@ class ConfigError(ValueError):
     """Raised when an experiment config is invalid."""
 
 
-def load_experiment_config(path: str | Path) -> ExperimentConfig:
+def apply_overrides(raw: dict[str, Any], overrides: list[str] | None) -> None:
+    """Apply ``dotted.key=value`` overrides to a parsed config, in place.
+
+    The value is a TOML literal, so strings need quotes (``experiment.name="run_a"``), numbers and
+    booleans do not (``experiment.seed=2``, ``data.params.include_retro=false``). An override may only
+    change a key the config already has, so a typo fails here instead of silently doing nothing.
+    """
+    for item in overrides or []:
+        key, separator, text = item.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise ConfigError(f"--set {item!r}: expected KEY=VALUE, e.g. experiment.seed=2")
+        try:
+            value = tomllib.loads(f"v = {text}")["v"]
+        except tomllib.TOMLDecodeError as error:
+            raise ConfigError(f"--set {item!r}: the value must be a TOML literal (quote strings): {error}") from error
+        *parents, leaf = key.split(".")
+        node: Any = raw
+        for part in parents:
+            node = node.get(part) if isinstance(node, dict) else None
+            if not isinstance(node, dict):
+                raise ConfigError(f"--set {item!r}: [{part}] is not a table in this config")
+        if leaf not in node:
+            raise ConfigError(f"--set {item!r}: the config has no key {key!r} (overrides change existing keys only)")
+        node[leaf] = value
+
+
+def load_experiment_config(path: str | Path, overrides: list[str] | None = None) -> ExperimentConfig:
     config_path = Path(path).expanduser().resolve()
     raw = _load_raw_config(config_path)
+    apply_overrides(raw, overrides)
     return parse_experiment_config(raw, config_path=config_path)
 
 
